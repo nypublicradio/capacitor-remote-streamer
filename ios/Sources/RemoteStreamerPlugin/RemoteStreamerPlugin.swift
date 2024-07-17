@@ -1,5 +1,6 @@
 import Foundation
 import Capacitor
+import MediaPlayer
 
 @objc(RemoteStreamerPlugin)
 public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -21,6 +22,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleStopEvent), name: Notification.Name("RemoteStreamerStop"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+        setupRemoteTransportControls()
     }
 
     @objc func handlePlayEvent() {
@@ -85,4 +87,23 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         implementation.seekTo(position: position)
         call.resolve()
     }
+
+    func setupRemoteTransportControls() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        
+        // Play command
+        commandCenter.playCommand.isEnabled = true
+        commandCenter.playCommand.addTarget { event in
+            self.implementation.resume()
+            return .success
+        }
+        
+        // Pause command
+        commandCenter.pauseCommand.isEnabled = true
+        commandCenter.pauseCommand.addTarget { event in
+            self.implementation.pause()
+            return .success
+        }
+    }
+
 }
