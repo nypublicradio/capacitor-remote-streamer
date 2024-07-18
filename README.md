@@ -19,6 +19,7 @@ npx cap sync
 * [`seekTo(...)`](#seekto)
 * [`stop()`](#stop)
 * [`setPlaybackRate(...)`](#setplaybackrate)
+* [`setNowPlayingInfo(...)`](#setnowplayinginfo)
 * [`addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering', ...)`](#addlistenererror--play--pause--stop--timeupdate--buffering-)
 * [`removeAllListeners()`](#removealllisteners)
 * [Interfaces](#interfaces)
@@ -32,12 +33,12 @@ npx cap sync
 ### play(...)
 
 ```typescript
-play(options: { url: string; }) => Promise<void>
+play(options: { url: string; enableCommandCenter: boolean; enableCommandCenterSeek: boolean; }) => Promise<void>
 ```
 
-| Param         | Type                          |
-| ------------- | ----------------------------- |
-| **`options`** | <code>{ url: string; }</code> |
+| Param         | Type                                                                                          |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| **`options`** | <code>{ url: string; enableCommandCenter: boolean; enableCommandCenterSeek: boolean; }</code> |
 
 --------------------
 
@@ -91,6 +92,19 @@ setPlaybackRate(options: { rate: number; }) => Promise<void>
 | Param         | Type                           |
 | ------------- | ------------------------------ |
 | **`options`** | <code>{ rate: number; }</code> |
+
+--------------------
+
+
+### setNowPlayingInfo(...)
+
+```typescript
+setNowPlayingInfo(options: { title: string; artist: string; album: string; imageUrl: string; }) => Promise<void>
+```
+
+| Param         | Type                                                                             |
+| ------------- | -------------------------------------------------------------------------------- |
+| **`options`** | <code>{ title: string; artist: string; album: string; imageUrl: string; }</code> |
 
 --------------------
 
