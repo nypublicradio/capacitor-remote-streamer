@@ -33,12 +33,12 @@ npx cap sync
 ### play(...)
 
 ```typescript
-play(options: { url: string; enableCommandCenter: boolean; enableCommandCenterSeek: boolean; }) => Promise<void>
+play(options: { url: string; enableCommandCenter?: boolean; enableCommandCenterSeek?: boolean; }) => Promise<void>
 ```
 
-| Param         | Type                                                                                          |
-| ------------- | --------------------------------------------------------------------------------------------- |
-| **`options`** | <code>{ url: string; enableCommandCenter: boolean; enableCommandCenterSeek: boolean; }</code> |
+| Param         | Type                                                                                            |
+| ------------- | ----------------------------------------------------------------------------------------------- |
+| **`options`** | <code>{ url: string; enableCommandCenter?: boolean; enableCommandCenterSeek?: boolean; }</code> |
 
 --------------------
 

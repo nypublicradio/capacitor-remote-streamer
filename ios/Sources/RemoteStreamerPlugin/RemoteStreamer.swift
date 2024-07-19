@@ -135,7 +135,8 @@ class RemoteStreamer: NSObject {
     }
     
     @objc private func playerDidFinishPlaying(note: NSNotification) {
-        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerStop"), object: nil)
+        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerStop"), object: nil, userInfo:
+            ["ended": true])
     }
     
     private func setupInterruptionObserver() {

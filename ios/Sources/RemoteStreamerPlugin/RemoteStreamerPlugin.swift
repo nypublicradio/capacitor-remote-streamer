@@ -72,7 +72,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
 
-        setNowPlayingInfo(title: call.getString("title") ?? "", artist: call.getString("artist") ?? "",
+        updateNowPlayingInfo(title: call.getString("title") ?? "", artist: call.getString("artist") ?? "",
             album: call.getString("album") ?? "", imageURL: URL(string: url))
         call.resolve()
     }
@@ -102,7 +102,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         call.resolve()
     }
 
-    func setNowPlayingInfo(title: String, artist: String, album: String, imageURL: URL?) {
+    func updateNowPlayingInfo(title: String, artist: String, album: String, imageURL: URL?) {
         var nowPlayingInfo = [String: Any]()
         nowPlayingInfo[MPMediaItemPropertyTitle] = title
         nowPlayingInfo[MPMediaItemPropertyArtist] = artist
