@@ -1,4 +1,5 @@
 import { WebPlugin } from '@capacitor/core';
+
 import type { RemoteStreamerPlugin } from './definitions';
 
 export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin {
@@ -16,6 +17,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
       this.audio.pause();
     }
     this.audio = new Audio(options.url);
+    this.audio.id = "pluginAudioElement"; // Assigning an ID to the audio element
     this.setupEventListeners(); // Call setupEventListeners here
     await this.audio.play();
     this.notifyListeners('play', {});
@@ -78,7 +80,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     if (this.audio) {
       this.audio.onplaying = () => this.notifyListeners('play', {});
       this.audio.onpause = () => this.notifyListeners('pause', {});
-      this.audio.onended = () => this.notifyListeners('stop', {});
+      this.audio.onended = () => this.notifyListeners('stop', { ended: true });
       this.audio.onerror = (e) => this.notifyListeners('error', { message: `Audio error: ${e}` });
       this.audio.onwaiting = () => this.notifyListeners('buffering', { isBuffering: true });
       this.audio.oncanplaythrough = () => this.notifyListeners('buffering', { isBuffering: false });
