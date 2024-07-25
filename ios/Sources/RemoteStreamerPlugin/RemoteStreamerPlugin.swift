@@ -20,6 +20,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handlePlayEvent), name: Notification.Name("RemoteStreamerPlay"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handlePauseEvent), name: Notification.Name("RemoteStreamerPause"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleStopEvent), name: Notification.Name("RemoteStreamerStop"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleEndedEvent), name: Notification.Name("RemoteStreamerEnded"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
     }
@@ -32,12 +33,12 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         notifyListeners("pause", data: nil)
     }
 
-    @objc func handleStopEvent(notification: Notification) {
-        if let userInfo = notification.userInfo, let ended = userInfo["ended"] as? Double {
-            notifyListeners("ended", data: ["ended": ended])
-        }else{
+    @objc func handleStopEvent() {
             notifyListeners("stop", data: nil)
-        }
+    }
+
+    @objc func handleEndedEvent() {
+            notifyListeners("ended", data: ["ended": true])
     }
 
     @objc func handleBufferingEvent() {
