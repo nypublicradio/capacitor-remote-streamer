@@ -32,7 +32,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         notifyListeners("pause", data: nil)
     }
 
-    @objc func handleStopEvent() {
+    @objc func handleStopEvent(notification: Notification) {
         if let userInfo = notification.userInfo, let ended = userInfo["ended"] as? Double {
             notifyListeners("ended", data: ["ended": ended])
         }else{
