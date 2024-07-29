@@ -11,7 +11,8 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "pause", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setNowPlayingInfo", returnType: CAPPluginReturnPromise)
     ]
     
     private let implementation = RemoteStreamer()
