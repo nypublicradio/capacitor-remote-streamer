@@ -51,6 +51,12 @@ class RemoteStreamer: NSObject {
         let time = CMTime(seconds: position, preferredTimescale: 1000)
         player?.seek(to: time)
     }
+
+    func seekBy(offset: Double) {
+        guard let currentTime = player?.currentTime() else { return }
+        let newTime = CMTime(seconds: currentTime.seconds + offset, preferredTimescale: 1000)
+        player?.seek(to: newTime)
+    }
     
     private func setupAudioSession() {
         do {

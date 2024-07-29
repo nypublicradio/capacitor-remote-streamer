@@ -59,7 +59,11 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         if (call.getBool("enableCommandCenter", false)) {
-            setupRemoteTransportControls()
+            if (call.getBoolean("enableCommandCenterSeek", false)) {
+                setupRemoteTransportControls(enableSeek: true)
+            } else {
+                setupRemoteTransportControls()
+            }
         }
         
         implementation.play(url: url) { result in
@@ -134,7 +138,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    func setupRemoteTransportControls() {
+    func setupRemoteTransportControls(enableSeek: Boolean = false) {
         let commandCenter = MPRemoteCommandCenter.shared()
         
         // Play command
@@ -149,6 +153,20 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         commandCenter.pauseCommand.addTarget { event in
             self.implementation.pause()
             return .success
+        }
+
+        if (enableSeek) {
+            commandCenter.seekForwardCommand.isEnabled = true
+            commandCenter.seekForwardCommand.addTarget { event in
+                self.implementation.seekBy(offset: 10)
+                return .success
+            }
+
+            commandCenter.seekBackwardCommand.isEnabled = true
+            commandCenter.seekBackwardCommand.addTarget { event in
+                self.implementation.seekBy(offset: -10)
+                return .success
+            }
         }
     }
 
