@@ -95,7 +95,7 @@ jobs:
             fi
             
             echo "//npm.pkg.github.com/:_authToken=$PAT" >> .npmrc
-            npm publish
+            # npm publish
             
 executors:
   default:
