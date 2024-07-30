@@ -3,7 +3,7 @@ import { WebPlugin } from '@capacitor/core';
 import type { RemoteStreamerPlugin } from './definitions';
 
 export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin {
-  async setNowPlayingInfo(options: { title: string; artist: string; album: string; imageUrl: string; }): Promise<void> {
+  async setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; }): Promise<void> {
     console.log("Setting now playing info", options);
   }
   async enableComandCenter(options: { seek: boolean; }): Promise<void> {
