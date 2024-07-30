@@ -156,14 +156,14 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         if (enableSeek) {
-            commandCenter.seekForwardCommand.isEnabled = true
-            commandCenter.seekForwardCommand.addTarget { event in
+            commandCenter.skipForwardCommand.isEnabled = true
+            commandCenter.skipForwardCommand.addTarget { event in
                 self.implementation.seekBy(offset: 10)
                 return .success
             }
 
-            commandCenter.seekBackwardCommand.isEnabled = true
-            commandCenter.seekBackwardCommand.addTarget { event in
+            commandCenter.skipBackwardCommand.isEnabled = true
+            commandCenter.skipBackwardCommand.addTarget { event in
                 self.implementation.seekBy(offset: -10)
                 return .success
             }
