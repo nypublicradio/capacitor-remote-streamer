@@ -59,7 +59,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         if (call.getBool("enableCommandCenter", false)) {
-            if (call.getBoolean("enableCommandCenterSeek", false)) {
+            if (call.getBool("enableCommandCenterSeek", false)) {
                 setupRemoteTransportControls(enableSeek: true)
             } else {
                 setupRemoteTransportControls()
