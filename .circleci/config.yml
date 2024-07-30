@@ -24,19 +24,19 @@ filter_prod: &filter_prod
 workflows:
   build-and-publish:
     jobs:
-      - test:
+      - deps:
           <<: *filter_all
       - build-and-publish:
           name: Build and publish (demo)
           tag: "0.0.0"
           <<: *filter_demo
           requires: 
-            - test
+            - deps
       - build-and-publish:
           name: Build and publish (prod)
           <<: *filter_prod
           requires:
-            - test
+            - deps
 
 jobs:
   deps:
@@ -100,4 +100,4 @@ jobs:
 executors:
   default:
     docker:
-      - image: cimg/node:14.18
+      - image: cimg/node:18.18.2
