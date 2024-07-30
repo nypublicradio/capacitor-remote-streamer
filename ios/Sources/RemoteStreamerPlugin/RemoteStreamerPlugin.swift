@@ -83,7 +83,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         updateNowPlayingInfo(title: call.getString("title") ?? "", artist: call.getString("artist") ?? "",
-            album: call.getString("album") ?? "", imageURL: URL(string: url))
+            album: call.getString("album") ?? "", duration: call.getString("duration") ?? "",imageURL: URL(string: url))
         call.resolve()
     }
     
@@ -112,11 +112,12 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         call.resolve()
     }
 
-    func updateNowPlayingInfo(title: String, artist: String, album: String, imageURL: URL?) {
+    func updateNowPlayingInfo(title: String, artist: String, album: String, duration: String ,imageURL: URL?) {
         var nowPlayingInfo = [String: Any]()
         nowPlayingInfo[MPMediaItemPropertyTitle] = title
         nowPlayingInfo[MPMediaItemPropertyArtist] = artist
         nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
+        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
         
         if let imageURL = imageURL {
             // Load the image from the URL asynchronously

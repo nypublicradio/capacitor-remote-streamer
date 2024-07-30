@@ -7,7 +7,7 @@ export interface RemoteStreamerPlugin {
   seekTo(options: { position: number }): Promise<void>;
   stop(): Promise<void>;
   setPlaybackRate(options: { rate: number }): Promise<void>;
-  setNowPlayingInfo(options: { title: string; artist: string; album: string; imageUrl: string }): Promise<void>;
+  setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string }): Promise<void>;
   addListener(
     eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error',
     listenerFunc: (data: RemoteStreamerEventData) => void
