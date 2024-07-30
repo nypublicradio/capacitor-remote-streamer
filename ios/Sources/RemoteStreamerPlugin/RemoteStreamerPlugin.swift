@@ -138,7 +138,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    func setupRemoteTransportControls(enableSeek: Boolean = false) {
+    func setupRemoteTransportControls(enableSeek: Bool = false) {
         let commandCenter = MPRemoteCommandCenter.shared()
         
         // Play command
