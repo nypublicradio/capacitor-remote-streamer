@@ -4,7 +4,10 @@
   "version": "0.0.0",
   "description": "Stream remote HLS and MP3 streams on iOS and Android. Capacitor 6.",
   "main": "dist/plugin.cjs.js",
-  "homepage": "https://wnyc.org",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/nypublicradio/capacitor-remote-streamer.git"
+  },
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
   "unpkg": "dist/plugin.js",
