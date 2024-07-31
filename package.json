@@ -15,7 +15,7 @@
     "ios/Sources",
     "ios/Tests",
     "Package.swift",
-    "Mp3HlsStreaming.podspec"
+    "NypublicRadioCapacitorRemoteStreamer.podspec"
   ],
   "author": "NYPR",
   "license": "MIT",
