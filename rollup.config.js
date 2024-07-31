@@ -4,7 +4,7 @@ export default {
     {
       file: 'dist/plugin.js',
       format: 'iife',
-      name: 'capacitorRemoteStreamer',
+      name: 'nypublicradioCapacitorRemoteStreamer',
       globals: {
         '@capacitor/core': 'capacitorExports',
       },
