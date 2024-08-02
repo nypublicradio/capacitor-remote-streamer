@@ -99,12 +99,12 @@ setPlaybackRate(options: { rate: number; }) => Promise<void>
 ### setNowPlayingInfo(...)
 
 ```typescript
-setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; }) => Promise<void>
+setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean; }) => Promise<void>
 ```
 
-| Param         | Type                                                                                               |
-| ------------- | -------------------------------------------------------------------------------------------------- |
-| **`options`** | <code>{ title: string; artist: string; album: string; duration: string; imageUrl: string; }</code> |
+| Param         | Type                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **`options`** | <code>{ title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean; }</code> |
 
 --------------------
 

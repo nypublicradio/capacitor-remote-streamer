@@ -86,7 +86,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         updateNowPlayingInfo(title: call.getString("title") ?? "", artist: call.getString("artist") ?? "",
-            album: call.getString("album") ?? "", duration: call.getString("duration") ?? "",imageURL: URL(string: url))
+            album: call.getString("album") ?? "", duration: call.getString("duration") ?? "",imageURL: URL(string: url),isLiveStream: call.getBool("isLiveStream", false))
         call.resolve()
     }
     
@@ -115,12 +115,13 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         call.resolve()
     }
 
-    func updateNowPlayingInfo(title: String, artist: String, album: String, duration: String ,imageURL: URL?) {
+    func updateNowPlayingInfo(title: String, artist: String, album: String, duration: String ,imageURL: URL?, isLiveStream: Bool) {
         var nowPlayingInfo = [String: Any]()
         nowPlayingInfo[MPMediaItemPropertyTitle] = title
         nowPlayingInfo[MPMediaItemPropertyArtist] = artist
         nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
         nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
+        nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = isLiveStream
         
         if let imageURL = imageURL {
             // Load the image from the URL asynchronously
@@ -171,6 +172,10 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.implementation.seekBy(offset: -10)
                 return .success
             }
+        } else {
+            // Disable seeking controls to indicate live stream
+            commandCenter.skipForwardCommand.isEnabled = false
+            commandCenter.skipBackwardCommand.isEnabled = false
         }
 
         commandCenter.changePlaybackPositionCommand.isEnabled = true
