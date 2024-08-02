@@ -24,6 +24,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleEndedEvent), name: Notification.Name("RemoteStreamerEnded"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+        setupRemoteTransportControls()
     }
 
     @objc func handlePlayEvent() {
@@ -63,13 +64,16 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
 
         if (call.getBool("enableCommandCenter", false)) {
             if (call.getBool("enableCommandCenterSeek", false)) {
-                setupRemoteTransportControls(enableSeek: true)
+                enableRemoteTransportControls(enableSeek: true)
             } else {
-                setupRemoteTransportControls()
+                enableRemoteTransportControls()
             }
+        } else {
+            disableRemoteTransportControls()
         }
         
         implementation.play(url: url) { result in
+            print("play")
             switch result {
             case .success:
                 call.resolve()
@@ -91,16 +95,19 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     
     @objc func pause(_ call: CAPPluginCall) {
+        print("pause")
         implementation.pause()
         call.resolve()
     }
     
     @objc func resume(_ call: CAPPluginCall) {
+        print("resume")
         implementation.resume()
         call.resolve()
     }
     
     @objc func stop(_ call: CAPPluginCall) {
+        print("stop")
         implementation.stop()
         call.resolve()
     }
@@ -142,26 +149,48 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
         }
     }
+    
+    func disableRemoteTransportControls() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.isEnabled = false
+        commandCenter.pauseCommand.isEnabled = false
+        commandCenter.togglePlayPauseCommand.isEnabled = false
+        commandCenter.changePlaybackPositionCommand.isEnabled = false
+        commandCenter.skipForwardCommand.isEnabled = false
+        commandCenter.skipBackwardCommand.isEnabled = false
+    }
 
-    func setupRemoteTransportControls(enableSeek: Bool = false) {
+    func enableRemoteTransportControls(enableSeek: Bool = false) {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.isEnabled = true
+        commandCenter.pauseCommand.isEnabled = true
+        commandCenter.togglePlayPauseCommand.isEnabled = true
+        commandCenter.changePlaybackPositionCommand.isEnabled = true
+        if (enableSeek) {
+            commandCenter.skipForwardCommand.isEnabled = true
+            commandCenter.skipBackwardCommand.isEnabled = true
+        } else {
+            commandCenter.skipForwardCommand.isEnabled = false
+            commandCenter.skipBackwardCommand.isEnabled = false
+        }
+    }
+    
+    func setupRemoteTransportControls() {
         let commandCenter = MPRemoteCommandCenter.shared()
         
         // Play command
-        commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { event in
             self.implementation.resume()
             return .success
         }
         
         // Pause command
-        commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { event in
             self.implementation.pause()
             return .success
         }
 
         // toggle play/pause command
-        commandCenter.togglePlayPauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.addTarget { event in
             if self.implementation.isPlaying() {
                 self.implementation.pause()
@@ -171,26 +200,16 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
             return .success
         }
 
-
-        if (enableSeek) {
-            commandCenter.skipForwardCommand.isEnabled = true
-            commandCenter.skipForwardCommand.addTarget { event in
-                self.implementation.seekBy(offset: 10)
-                return .success
-            }
-
-            commandCenter.skipBackwardCommand.isEnabled = true
-            commandCenter.skipBackwardCommand.addTarget { event in
-                self.implementation.seekBy(offset: -10)
-                return .success
-            }
-        } else {
-            // Disable seeking controls to indicate live stream
-            commandCenter.skipForwardCommand.isEnabled = false
-            commandCenter.skipBackwardCommand.isEnabled = false
+        commandCenter.skipForwardCommand.addTarget { event in
+            self.implementation.seekBy(offset: 10)
+            return .success
         }
 
-        commandCenter.changePlaybackPositionCommand.isEnabled = true
+        commandCenter.skipBackwardCommand.addTarget { event in
+            self.implementation.seekBy(offset: -10)
+            return .success
+        }
+
         commandCenter.changePlaybackPositionCommand.addTarget { event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             let newTime = event.positionTime
