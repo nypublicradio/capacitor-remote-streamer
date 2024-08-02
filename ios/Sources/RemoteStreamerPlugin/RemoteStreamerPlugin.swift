@@ -49,7 +49,10 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func handleTimeUpdateEvent(notification: Notification) {
         if let userInfo = notification.userInfo, let currentTime = userInfo["currentTime"] as? Double {
             notifyListeners("timeUpdate", data: ["currentTime": currentTime])
+            MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
         }
+
+
     }
 
     @objc func play(_ call: CAPPluginCall) {
@@ -168,6 +171,14 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.implementation.seekBy(offset: -10)
                 return .success
             }
+        }
+
+        commandCenter.changePlaybackPositionCommand.isEnabled = true
+        commandCenter.changePlaybackPositionCommand.addTarget { event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            let newTime = event.positionTime
+            self.implementation.seekTo(position: newTime)
+            return .success
         }
     }
 
