@@ -160,6 +160,18 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
             return .success
         }
 
+        // toggle play/pause command
+        commandCenter.togglePlayPauseCommand.isEnabled = true
+        commandCenter.togglePlayPauseCommand.addTarget { event in
+            if self.implementation.isPlaying() {
+                self.implementation.pause()
+            } else {
+                self.implementation.resume()
+            }
+            return .success
+        }
+
+
         if (enableSeek) {
             commandCenter.skipForwardCommand.isEnabled = true
             commandCenter.skipForwardCommand.addTarget { event in
