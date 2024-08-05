@@ -6,7 +6,15 @@ import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.os.Handler;
 import android.os.Looper;
+import android.support.v4.media.MediaMetadataCompat;
+import android.support.v4.media.session.MediaSessionCompat;
+import android.util.Log;
 
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.ExoPlayer;
 import com.google.android.exoplayer2.MediaItem;
@@ -15,22 +23,22 @@ import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.hls.HlsMediaSource;
-import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
-import com.google.android.exoplayer2.util.Util;
-import com.getcapacitor.JSObject;
-import com.getcapacitor.Plugin;
-import com.getcapacitor.PluginCall;
-import com.getcapacitor.PluginMethod;
-import com.getcapacitor.annotation.CapacitorPlugin;
+import com.google.android.exoplayer2.upstream.DefaultDataSource;
+
+import org.json.JSONException;
+
+import java.io.IOException;
 
 @CapacitorPlugin(name = "RemoteStreamer")
 public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudioFocusChangeListener {
     private ExoPlayer player;
-    private DefaultDataSourceFactory dataSourceFactory;
+    private DefaultDataSource.Factory dataSourceFactory;
     private AudioManager audioManager;
     private AudioFocusRequest focusRequest;
     private Handler handler;
     private Runnable updateTimeTask;
+
+    private MediaSessionCompat mediaSession;
 
     @Override
     public void load() {
@@ -38,7 +46,8 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         Context context = getContext();
         handler = new Handler(Looper.getMainLooper());
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        dataSourceFactory = new DefaultDataSourceFactory(context, Util.getUserAgent(context, "RemoteStreamer"));
+        dataSourceFactory = new DefaultDataSource.Factory(context);
+        mediaSession = new MediaSessionCompat(context, "wnyc");
 
         AudioAttributes audioAttributes = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -65,7 +74,7 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
             player = new ExoPlayer.Builder(getContext()).build();
 
             MediaSource mediaSource;
-            if (url.endsWith(".m3u8")) {
+            if (url.contains(".m3u8")) {
                 mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
                         .createMediaSource(MediaItem.fromUri(url));
             } else {
@@ -126,7 +135,12 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
     @PluginMethod
     public void pause(PluginCall call) {
         if (player != null) {
-            handler.post(() -> player.pause());
+            Log.d("RemoteStreamerPlugin", "pausing playback");
+                handler.post(() -> {
+                    if (player != null) {
+                        player.pause();
+                    }
+                });
             notifyListeners("pause", new JSObject());
         }
         call.resolve();
@@ -135,9 +149,14 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
     @PluginMethod
     public void resume(PluginCall call) {
         if (player != null) {
+            Log.d("RemoteStreamerPlugin", "resuming playback");
             int focusResult = audioManager.requestAudioFocus(focusRequest);
             if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                handler.post(() -> player.play());
+                handler.post(() -> {
+                    if (player != null) {
+                        player.play();
+                    }
+                });
                 notifyListeners("play", new JSObject());
             }
         }
@@ -164,9 +183,25 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         call.resolve();
     }
 
+    @PluginMethod
+    public void setNowPlayingInfo(PluginCall call) throws JSONException, IOException {
+        String title = call.getString("title");
+        String artist = call.getString("artist");
+        String album = call.getString("album");
+
+        MediaMetadataCompat.Builder builder = new MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, title)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
+                .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album);
+        mediaSession.setMetadata(builder.build());
+
+        call.resolve();
+    }
+
     private void releasePlayer() {
         if (player != null) {
             handler.post(() -> {
+                Log.d("RemoteStreamerPlugin", "releaseing player");
                 stopUpdatingTime();
                 player.release();
                 player = null;

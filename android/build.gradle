@@ -57,6 +57,7 @@ dependencies {
     implementation 'com.google.android.exoplayer:exoplayer-dash:2.18.7'
     implementation 'com.google.android.exoplayer:exoplayer-hls:2.18.7'
     implementation 'com.google.android.exoplayer:exoplayer-smoothstreaming:2.18.7'
+    implementation "androidx.media:media:1.6.0" // Add this line
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
 }
