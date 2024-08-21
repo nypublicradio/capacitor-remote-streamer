@@ -228,9 +228,11 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
 
     @PluginMethod
     public void seekTo(PluginCall call) {
-        Long position = call.getLong("position");
-        if (position == null) {
-            call.reject("Position is required");
+        Long position = null;
+        try {
+            position = call.getData().getLong("position") * 1000; // s to ms
+        } catch (JSONException e) {
+            call.reject("Can't parse position " + call.getData().toString());
             return;
         }
         seekTo(position);
