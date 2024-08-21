@@ -1,7 +1,7 @@
 {
   "name": "@nypublicradio/capacitor-remote-streamer",
   "repository": "git://github.com/nypublicradio/capacitor-remote-streamer.git",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Stream remote HLS and MP3 streams on iOS and Android. Capacitor 6.",
   "main": "dist/plugin.cjs.js",
   "repository": {

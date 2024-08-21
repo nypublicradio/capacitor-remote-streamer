@@ -256,10 +256,12 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
 
     @PluginMethod
     public void setNowPlayingInfo(PluginCall call) throws JSONException, IOException {
+        String title = call.getData().getString("title", "WNYC");
         String artist = call.getString("artist", "");
         String album = call.getString("album", "");
         String artwork = call.getString("imageUrl", "");
 
+        service.setTitle(title);
         service.setArtist(artist);
         service.setAlbum(album);
         service.setArtwork(getImage(artwork));
@@ -333,6 +335,8 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         super.handleOnDestroy();
     }
 
+    private boolean resumeOnFocusLossTransient = false;
+
     @Override
     public void onAudioFocusChange(int focusChange) {
         if (player == null) {
@@ -343,12 +347,13 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
             switch (focusChange) {
                 case AudioManager.AUDIOFOCUS_GAIN:
                     player.setVolume(1.0f);
-                    player.play();
+                    if (resumeOnFocusLossTransient) {
+                        player.play();
+                    }
                     break;
                 case AudioManager.AUDIOFOCUS_LOSS:
-                    player.pause();
-                    break;
                 case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                    resumeOnFocusLossTransient = player.isPlaying();
                     player.pause();
                     break;
                 case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
@@ -393,7 +398,7 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
     }
 
     private final Set<String> lsactions = Set.of("pause", "play");
-    private final Set<String> odactions = Set.of("pause", "play", "nexttrack", "previoustrack");
+    private final Set<String> odactions = Set.of("pause", "play", "nexttrack", "previoustrack","seekto");
     public boolean hasActionHandler(String actionName) {
         if (isLiveStream) {
             return this.lsactions.contains(actionName);
