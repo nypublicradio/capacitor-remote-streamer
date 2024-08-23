@@ -363,6 +363,13 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         });
     }
 
+    @PluginMethod
+    public void setVolume(PluginCall call) throws JSONException {
+        Float volume;
+        volume = (float) call.getData().getDouble("volume");
+        player.setVolume(volume);
+        call.resolve();
+    }
 
     public void actionCallback(String action) {
         actionCallback(action, new JSObject());
