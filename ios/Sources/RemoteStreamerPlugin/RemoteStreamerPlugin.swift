@@ -13,6 +13,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlayingInfo", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise)
     ]
     
     private let implementation = RemoteStreamer()
@@ -23,6 +24,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleStopEvent), name: Notification.Name("RemoteStreamerStop"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleEndedEvent), name: Notification.Name("RemoteStreamerEnded"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleSetVolumeEvent), name: Notification.Name("RemoteStreamerSetVolume"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
         setupRemoteTransportControls()
     }
@@ -109,6 +111,12 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func stop(_ call: CAPPluginCall) {
         print("stop")
         implementation.stop()
+        call.resolve()
+    }
+    
+    @objc func handleSetVolumeEvent(_ call: CAPPluginCall) {
+        print("set volume")
+        implementation.setVolume(call.getFloat("volume") ?? 1.0)
         call.resolve()
     }
     
