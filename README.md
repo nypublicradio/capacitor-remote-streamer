@@ -18,6 +18,7 @@ npx cap sync
 * [`resume()`](#resume)
 * [`seekTo(...)`](#seekto)
 * [`stop()`](#stop)
+* [`setVolume(...)`](#setvolume)
 * [`setPlaybackRate(...)`](#setplaybackrate)
 * [`setNowPlayingInfo(...)`](#setnowplayinginfo)
 * [`addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering', ...)`](#addlistenererror--play--pause--stop--timeupdate--buffering-)
@@ -79,6 +80,19 @@ seekTo(options: { position: number; }) => Promise<void>
 ```typescript
 stop() => Promise<void>
 ```
+
+--------------------
+
+
+### setVolume(...)
+
+```typescript
+setVolume(options: { volume: number; }) => Promise<void>
+```
+
+| Param         | Type                             |
+| ------------- | -------------------------------- |
+| **`options`** | <code>{ volume: number; }</code> |
 
 --------------------
 

@@ -144,6 +144,11 @@ class RemoteStreamer: NSObject {
         NotificationCenter.default.post(name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil, userInfo: ["currentTime": time])
     }
     
+    func setVolume(volume: Double) {
+        //player?.setVolume({volume})
+        player?.volume = Float(volume)
+    }
+    
     @objc private func playerDidFinishPlaying(note: NSNotification) {
         NotificationCenter.default.post(name: Notification.Name("RemoteStreamerEnded"), object: nil, userInfo:
             ["ended": true])

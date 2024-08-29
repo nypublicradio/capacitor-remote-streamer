@@ -76,6 +76,12 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     }
   }
 
+  async setVolume(options: { volume: number }): Promise<void> {
+    if (this.audio) {
+      this.audio.volume = options.volume;
+    }
+  }
+
   private setupEventListeners() {
     if (this.audio) {
       this.audio.onplaying = () => this.notifyListeners('play', {});
