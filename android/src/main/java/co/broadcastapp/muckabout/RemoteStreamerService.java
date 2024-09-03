@@ -102,7 +102,7 @@ import java.util.Set;
             notificationStyle = new MediaStyle().setMediaSession(mediaSession.getSessionToken());
             notificationBuilder = new NotificationCompat.Builder(this, "playback")
                     .setStyle(notificationStyle)
-                    .setSmallIcon(R.drawable.ic_baseline_volume_up_24)
+                    .setSmallIcon(R.drawable.ic_baseline_wnyc_white)
                     .setContentIntent(PendingIntent.getActivity(getApplicationContext(), 0, intent, PendingIntent.FLAG_IMMUTABLE))
                     .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
 
