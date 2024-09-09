@@ -162,6 +162,8 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
                         break;
                     case Player.STATE_ENDED:
                         stopUpdatingTime();
+                        service.setPlaybackState(PlaybackStateCompat.STATE_NONE);
+                        service.update();
                         notifyListeners("stop", new JSObject());
                         break;
                 }
