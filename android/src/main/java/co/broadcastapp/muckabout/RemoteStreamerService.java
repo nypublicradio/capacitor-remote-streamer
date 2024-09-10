@@ -17,6 +17,7 @@ import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 import androidx.media.session.MediaButtonReceiver;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
@@ -146,6 +147,8 @@ import java.util.Set;
 
         public void destroy() {
             stopForeground(true);
+            //mediaSession.setActive(false);
+            notificationManager.cancel(NOTIFICATION_ID);
             stopSelf();
         }
 
@@ -218,11 +221,6 @@ import java.util.Set;
         @SuppressLint("RestrictedApi")
         public void update() {
             if (possibleActionsUpdate) {
-                if (playbackState == PlaybackStateCompat.STATE_NONE) {
-                    mediaSession.setActive(false);
-                    notificationManager.cancel(NOTIFICATION_ID);
-                    return;
-                }
                 if (notificationBuilder != null) {
                     notificationBuilder.mActions.clear();
                 }

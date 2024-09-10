@@ -84,8 +84,6 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         dataSourceFactory = new DefaultDataSource.Factory(context);
         mediaSession = new MediaSessionCompat(context, "wnyc");
 
-        startMediaService();
-
         AudioAttributes audioAttributes = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -112,7 +110,18 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
             call.reject("URL is required");
             return;
         }
-        
+
+        if (service == null) {
+            startMediaService();
+            while (service == null) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
         handler.post(() -> {
             releasePlayer();
             player = new ExoPlayer.Builder(getContext()).build();
@@ -162,8 +171,7 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
                         break;
                     case Player.STATE_ENDED:
                         stopUpdatingTime();
-                        service.setPlaybackState(PlaybackStateCompat.STATE_NONE);
-                        service.update();
+                        stop();
                         notifyListeners("stop", new JSObject());
                         break;
                 }
@@ -249,11 +257,17 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
 
     @PluginMethod
     public void stop(PluginCall call) {
-        releasePlayer();
-        service.setPlaybackState(PlaybackStateCompat.STATE_NONE);
-        service.update();
-        notifyListeners("stop", new JSObject());
+        stop();
         call.resolve();
+    }
+
+    public void stop() {
+        releasePlayer();
+        if (service != null) {
+            // stop may be called before the service is started
+            service.destroy();
+        }
+        notifyListeners("stop", new JSObject());
     }
 
     @PluginMethod
