@@ -171,8 +171,7 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
                         break;
                     case Player.STATE_ENDED:
                         stopUpdatingTime();
-                        stop();
-                        notifyListeners("stop", new JSObject().put("ended", true));
+                        stop(true);
                         break;
                 }
             }
@@ -262,7 +261,11 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
     }
 
     public void stop() {
-        notifyListeners("stop", new JSObject().put("ended", false));
+        stop(false);
+    }
+
+    public void stop(final boolean ended) {
+        notifyListeners("stop", new JSObject().put("ended", ended));
         releasePlayer();
         if (service != null) {
             // stop may be called before the service is started
