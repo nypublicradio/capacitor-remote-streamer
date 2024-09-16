@@ -187,6 +187,14 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
 
             @Override
             public void onPlayerError(PlaybackException error) {
+                if (error.getCause().getClass().equals(java.net.ConnectException.class)) {
+                    pause();
+                }
+                if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                    player.seekToDefaultPosition();
+                    player.prepare();
+                    player.play();
+                }
                 notifyListeners("error", new JSObject().put("message", error.getMessage()));
             }
         });
@@ -225,6 +233,10 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
             if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
                 handler.post(() -> {
                     if (player != null) {
+                        if (isLiveStream) {
+                            // if a live stream is paused and resumed, catch up to live
+                            player.seekToDefaultPosition();
+                        }
                         player.play();
                     }
                 });
