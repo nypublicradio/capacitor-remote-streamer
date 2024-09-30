@@ -10,11 +10,14 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.Binder;
+import android.os.Looper;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
+import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
@@ -155,7 +158,8 @@ import java.util.Set;
         @Override
         public int onStartCommand(Intent intent, int flags, int startId) {
             MediaButtonReceiver.handleIntent(mediaSession, intent);
-            return super.onStartCommand(intent, flags, startId);
+            super.onStartCommand(intent, flags, startId);
+            return Service.START_NOT_STICKY;
         }
 
         public void setPlaybackState(int playbackState) {
