@@ -35,6 +35,7 @@ import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.hls.HlsMediaSource;
 import com.google.android.exoplayer2.upstream.DefaultDataSource;
+import com.google.android.exoplayer2.upstream.DefaultHttpDataSource;
 
 import org.json.JSONException;
 
@@ -81,7 +82,9 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         Context context = getContext();
         handler = new Handler(Looper.getMainLooper());
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        dataSourceFactory = new DefaultDataSource.Factory(context);
+        DefaultHttpDataSource.Factory httpDataSourceFactory =
+            new DefaultHttpDataSource.Factory().setUserAgent("WNYC-App");
+        dataSourceFactory = new DefaultDataSource.Factory(context, httpDataSourceFactory);
         mediaSession = new MediaSessionCompat(context, "wnyc");
 
         AudioAttributes audioAttributes = new AudioAttributes.Builder()

@@ -16,12 +16,13 @@ class RemoteStreamer: NSObject {
     }
     
     func play(url: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        let headers = ["User-Agent": "WNYC-App"]
         guard let url = URL(string: url) else {
             completion(.failure(NSError(domain: "RemoteStreamer", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
             return
         }
         
-        let asset = AVURLAsset(url: url)
+        let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         let playerItem = AVPlayerItem(asset: asset)
         
         player = AVPlayer(playerItem: playerItem)
