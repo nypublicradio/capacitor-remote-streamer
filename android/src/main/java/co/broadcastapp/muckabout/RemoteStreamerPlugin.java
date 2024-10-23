@@ -82,8 +82,18 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         Context context = getContext();
         handler = new Handler(Looper.getMainLooper());
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        String versionName = "1.0"; // Default version
+        String deviceModel = android.os.Build.MODEL;
+        String osVersion = android.os.Build.VERSION.RELEASE;
+        try {
+            versionName = context.getPackageManager()
+            .getPackageInfo(context.getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            Log.e("RemoteStreamerPlugin", "Failed to get version name", e);
+        }
+        String userAgent = "WNYC-App/" + versionName + " (Android " + osVersion + "; " + deviceModel + ")";
         DefaultHttpDataSource.Factory httpDataSourceFactory =
-            new DefaultHttpDataSource.Factory().setUserAgent("WNYC-App");
+            new DefaultHttpDataSource.Factory().setUserAgent(userAgent);
         dataSourceFactory = new DefaultDataSource.Factory(context, httpDataSourceFactory);
         mediaSession = new MediaSessionCompat(context, "wnyc");
 
