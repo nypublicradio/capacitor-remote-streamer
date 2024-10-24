@@ -16,7 +16,10 @@ class RemoteStreamer: NSObject {
     }
     
     func play(url: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        let headers = ["User-Agent": "WNYC-App"]
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+        let osVersion = UIDevice.current.systemVersion
+        let deviceModel = UIDevice.current.model
+        let headers = ["User-Agent": "WNYC-App/iOS \(appVersion); \(deviceModel); iOS \(osVersion)"]
         guard let url = URL(string: url) else {
             completion(.failure(NSError(domain: "RemoteStreamer", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
             return
