@@ -64,7 +64,7 @@ import java.util.Set;
         private final IBinder binder = new LocalBinder();
 
         public final class LocalBinder extends Binder {
-            RemoteStreamerService getService() {
+            public RemoteStreamerService getService() {
                 return RemoteStreamerService.this;
             }
         }
