@@ -14,11 +14,8 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
 
   async play(options: { url: string }): Promise<void> {
     if (this.audio) {
-      console.log('plugin play() pause')
       this.audio.pause();
     }
-    console.log('plugin play() after pause')
-
     this.audio = new Audio(options.url);
     this.audio.id = "pluginAudioElement"; // Assigning an ID to the audio element
     this.setupEventListeners(); // Call setupEventListeners here
