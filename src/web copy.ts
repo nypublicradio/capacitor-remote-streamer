@@ -1,47 +1,27 @@
 import { WebPlugin } from '@capacitor/core';
-import Hls from 'hls.js';
 
 import type { RemoteStreamerPlugin } from './definitions';
 
 export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin {
-  private audio: HTMLAudioElement | null = null;
-  private intervalId: number | null = null;
-  private hls: Hls | null = null;
-
   async setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; }): Promise<void> {
     console.log("Setting now playing info", options);
   }
-
-  async enableCommandCenter(options: { seek: boolean; }): Promise<void> {
+  async enableComandCenter(options: { seek: boolean; }): Promise<void> {
     console.log("Enabling lock screen control", options);
   }
+  private audio: HTMLAudioElement | null = null;
+  private intervalId: number | null = null;
 
   async play(options: { url: string }): Promise<void> {
     if (this.audio) {
       this.audio.pause();
     }
-    this.audio = new Audio();
+    this.audio = new Audio(options.url);
     this.audio.id = "pluginAudioElement"; // Assigning an ID to the audio element
     this.setupEventListeners(); // Call setupEventListeners here
-
-    if (Hls.isSupported() && options.url.endsWith('.m3u8')) {
-      this.hls = new Hls();
-      this.hls.loadSource(options.url);
-      console.log("this.hls", this.hls);
-      this.hls.attachMedia(this.audio);
-      this.hls.on(Hls.Events.MANIFEST_PARSED, async () => {
-        if (this.audio) {
-          await this.audio.play();
-        }
-        this.notifyListeners('play', {});
-        this.startTimeUpdates();
-      });
-    } else {
-      this.audio.src = options.url;
-      await this.audio.play();
-      this.notifyListeners('play', {});
-      this.startTimeUpdates();
-    }
+    await this.audio.play();
+    this.notifyListeners('play', {});
+    this.startTimeUpdates();
   }
 
   async pause(): Promise<void> {
@@ -67,17 +47,13 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
   async stop(): Promise<void> {
     if (this.audio) {
       this.audio.pause();
-      this.audio.src = '';
-      this.audio.load();
+      this.audio.src = ''
+      this.audio.load()
       this.audio.currentTime = 0;
       this.audio = null;
-      if (this.hls) {
-        this.hls.destroy();
-        this.hls = null;
-      }
       this.notifyListeners('stop', {});
       this.stopTimeUpdates();
-      console.log('stopped', this.audio);
+      console.log('stopped', this.audio)
     }
   }
 
