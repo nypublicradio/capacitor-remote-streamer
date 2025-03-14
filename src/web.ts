@@ -39,6 +39,9 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
         }
         this.notifyListeners('play', {});
         this.startTimeUpdates();
+        if (this.hls) {
+          this.setupID3Listeners(this.hls);
+        }
       });
     } else {
       this.audio.src = options.url;
@@ -113,6 +116,14 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     }
   }
 
+  private setupID3Listeners(hls: Hls) {
+    if (hls) {
+      hls.on(Hls.Events.FRAG_PARSING_METADATA, (_, data) => {
+        this.notifyListeners('id3Metadata', data);
+      });
+    }
+  }
+
   private setupEventListeners() {
     if (this.audio) {
       this.audio.onplaying = () => this.notifyListeners('play', {});
@@ -121,6 +132,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
       this.audio.onerror = (e) => this.notifyListeners('error', { message: `Audio error: ${e}` });
       this.audio.onwaiting = () => this.notifyListeners('buffering', { isBuffering: true });
       this.audio.oncanplaythrough = () => this.notifyListeners('buffering', { isBuffering: false });
+
     }
   }
 }

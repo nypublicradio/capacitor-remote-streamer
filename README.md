@@ -21,7 +21,7 @@ npx cap sync
 * [`setVolume(...)`](#setvolume)
 * [`setPlaybackRate(...)`](#setplaybackrate)
 * [`setNowPlayingInfo(...)`](#setnowplayinginfo)
-* [`addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering', ...)`](#addlistenererror--play--pause--stop--timeupdate--buffering-)
+* [`addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'id3Metadata', ...)`](#addlistenererror--play--pause--stop--timeupdate--buffering--id3metadata-)
 * [`removeAllListeners()`](#removealllisteners)
 * [Interfaces](#interfaces)
 * [Type Aliases](#type-aliases)
@@ -123,16 +123,16 @@ setNowPlayingInfo(options: { title: string; artist: string; album: string; durat
 --------------------
 
 
-### addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering', ...)
+### addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'id3Metadata', ...)
 
 ```typescript
-addListener(eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error', listenerFunc: (data: RemoteStreamerEventData) => void) => Promise<PluginListenerHandle>
+addListener(eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error' | 'id3Metadata', listenerFunc: (data: RemoteStreamerEventData) => void) => Promise<PluginListenerHandle>
 ```
 
-| Param              | Type                                                                                           |
-| ------------------ | ---------------------------------------------------------------------------------------------- |
-| **`eventName`**    | <code>'error' \| 'play' \| 'pause' \| 'stop' \| 'timeUpdate' \| 'buffering'</code>             |
-| **`listenerFunc`** | <code>(data: <a href="#remotestreamereventdata">RemoteStreamerEventData</a>) =&gt; void</code> |
+| Param              | Type                                                                                                |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| **`eventName`**    | <code>'error' \| 'play' \| 'pause' \| 'stop' \| 'timeUpdate' \| 'buffering' \| 'id3Metadata'</code> |
+| **`listenerFunc`** | <code>(data: <a href="#remotestreamereventdata">RemoteStreamerEventData</a>) =&gt; void</code>      |
 
 **Returns:** <code>Promise&lt;<a href="#pluginlistenerhandle">PluginListenerHandle</a>&gt;</code>
 
@@ -203,11 +203,19 @@ removeAllListeners() => Promise<void>
 | **`message`** | <code>string</code>  |
 
 
+#### ID3MetadataEvent
+
+| Prop          | Type                |
+| ------------- | ------------------- |
+| **`type`**    | <code>'data'</code> |
+| **`message`** | <code>object</code> |
+
+
 ### Type Aliases
 
 
 #### RemoteStreamerEventData
 
-<code><a href="#playevent">PlayEvent</a> | <a href="#pauseevent">PauseEvent</a> | <a href="#stopevent">StopEvent</a> | <a href="#timeupdateevent">TimeUpdateEvent</a> | <a href="#bufferingevent">BufferingEvent</a> | <a href="#errorevent">ErrorEvent</a></code>
+<code><a href="#playevent">PlayEvent</a> | <a href="#pauseevent">PauseEvent</a> | <a href="#stopevent">StopEvent</a> | <a href="#timeupdateevent">TimeUpdateEvent</a> | <a href="#bufferingevent">BufferingEvent</a> | <a href="#errorevent">ErrorEvent</a> | <a href="#id3metadataevent">ID3MetadataEvent</a></code>
 
 </docgen-api>
