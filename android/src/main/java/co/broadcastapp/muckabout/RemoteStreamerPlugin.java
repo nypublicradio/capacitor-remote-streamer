@@ -306,11 +306,16 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         String album = call.getString("album", "");
         String artwork = call.getString("imageUrl", "");
 
-        service.setTitle(title);
-        service.setArtist(artist);
-        service.setAlbum(album);
-        service.setArtwork(getImage(artwork));
-        service.update();
+        if (service != null) {
+            service.setTitle(title);
+            service.setArtist(artist);
+            service.setAlbum(album);
+            service.setArtwork(getImage(artwork));
+            service.update();
+        } else {
+            call.reject("Service is not initialized");
+            return;
+        }
 
         call.resolve();
     }
