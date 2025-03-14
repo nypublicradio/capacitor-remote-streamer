@@ -10,7 +10,7 @@ export interface RemoteStreamerPlugin {
   setPlaybackRate(options: { rate: number }): Promise<void>;
   setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean }): Promise<void>;
   addListener(
-    eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error',
+    eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error' | 'id3Metadata',
     listenerFunc: (data: RemoteStreamerEventData) => void
   ): Promise<PluginListenerHandle>;
   removeAllListeners(): Promise<void>;
@@ -22,7 +22,8 @@ export type RemoteStreamerEventData =
   | StopEvent
   | TimeUpdateEvent
   | BufferingEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | ID3MetadataEvent;
 
 export interface PlayEvent {
   type: 'play';
@@ -49,4 +50,9 @@ export interface BufferingEvent {
 export interface ErrorEvent {
   type: 'error';
   message: string;
+}
+
+export interface ID3MetadataEvent {
+  type: 'data';
+  message: object;
 }
