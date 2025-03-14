@@ -1,9 +1,10 @@
 import Foundation
 import AVFoundation
 
-class RemoteStreamer: NSObject {
+class RemoteStreamer: NSObject, AVPlayerItemMetadataOutputPushDelegate {
     private var player: AVPlayer?
     private var timeObserver: Any?
+    private var metadataOutput: AVPlayerItemMetadataOutput?
     private var playbackBufferEmptyObserver: NSKeyValueObservation?
     private var playbackBufferFullObserver: NSKeyValueObservation?
     private var playbackLikelyToKeepUpObserver: NSKeyValueObservation?
@@ -86,7 +87,7 @@ class RemoteStreamer: NSObject {
         
         playbackBufferFullObserver = playerItem.observe(\.isPlaybackBufferFull, options: [.new, .initial]) { item, change in
             if change.newValue == true {
-                print("Buffer is full")
+                    print("Buffer is full")
             }
         }
         
@@ -117,6 +118,12 @@ class RemoteStreamer: NSObject {
             }
         }
         
+        // Set up metadata output for ID3 tags
+        let metadataOutput = AVPlayerItemMetadataOutput(identifiers: nil)
+        metadataOutput.setDelegate(self, queue: DispatchQueue.main)
+        playerItem.add(metadataOutput)
+        self.metadataOutput = metadataOutput
+
         setupTimeObserver()
     }
     
@@ -128,6 +135,12 @@ class RemoteStreamer: NSObject {
         playerTimeControlStatusObserver?.invalidate()
         playerStatusObserver?.invalidate()
         removeTimeObserver()
+        
+        if let metadataOutput = self.metadataOutput,
+           let playerItem = player?.currentItem {
+            playerItem.remove(metadataOutput)
+        }
+        self.metadataOutput = nil
     }
     
     private func setupTimeObserver() {
@@ -187,5 +200,44 @@ class RemoteStreamer: NSObject {
     deinit {
         removeObservers()
         NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
+    }
+
+    // AVPlayerItemMetadataOutputPushDelegate method
+    func metadataOutput(_ output: AVPlayerItemMetadataOutput,
+                       didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
+                       from track: AVPlayerItemTrack?) {
+        guard let group = groups.first,
+              let items = group.items as? [AVMetadataItem] else {
+            return
+        }
+        
+        var metadata: [String: Any] = [:]
+        
+        for item in items {
+            // Common metadata identifiers
+            if let commonKey = item.commonKey?.rawValue, let value = item.value {
+                metadata[commonKey] = value
+                print("Metadata[\(commonKey)]: \(value)")
+            }
+            // ID3 specific keys
+            else if let key = item.key as? String, let value = item.value {
+                metadata[key] = value
+                print("ID3[\(key)]: \(value)")
+            }
+            // Try to get the identifier as string
+            else if let identifier = item.identifier as? String, let value = item.value {
+                metadata[identifier] = value
+                print("Other[\(identifier)]: \(value)")
+            }
+        }
+        
+        // Only notify if we have actual metadata
+        if !metadata.isEmpty {
+            NotificationCenter.default.post(
+                name: Notification.Name("RemoteStreamerMetadataUpdate"),
+                object: nil,
+                userInfo: metadata
+            )
+        }
     }
 }
