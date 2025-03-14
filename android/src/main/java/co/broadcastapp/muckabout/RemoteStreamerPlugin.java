@@ -31,6 +31,9 @@ import com.google.android.exoplayer2.ExoPlayer;
 import com.google.android.exoplayer2.MediaItem;
 import com.google.android.exoplayer2.PlaybackException;
 import com.google.android.exoplayer2.Player;
+import com.google.android.exoplayer2.metadata.Metadata;
+import com.google.android.exoplayer2.metadata.id3.Id3Frame;
+import com.google.android.exoplayer2.metadata.id3.TextInformationFrame;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.hls.HlsMediaSource;
@@ -196,6 +199,14 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
                     notifyListeners("play", new JSObject());
                 } else {
                     notifyListeners("pause", new JSObject());
+                }
+            }
+
+            @Override
+            public void onMetadata(Metadata metadata) {
+                Metadata.Entry entry = metadata.get(0);
+                if (entry instanceof TextInformationFrame) {
+                    Log.d("RemoteStreamerPlugin", "metadata: " + ((TextInformationFrame)entry).values);
                 }
             }
 
