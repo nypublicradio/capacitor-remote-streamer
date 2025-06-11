@@ -28,7 +28,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     const urlWithoutParams = options.url.split('?')[0];
     if (Hls.isSupported() && urlWithoutParams.endsWith('.m3u8')) {
       this.hls = new Hls({
-        xhrSetup: (xhr: XMLHttpRequest, url: string) => {
+        xhrSetup: (xhr: XMLHttpRequest) => {
           xhr.withCredentials = false;
         }
       });
