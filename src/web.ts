@@ -21,17 +21,12 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
       this.audio.pause();
     }
     this.audio = new Audio();
-    this.audio.id = "pluginAudioElement";
-    this.audio.crossOrigin = "anonymous";
-    this.setupEventListeners();
+    this.audio.id = "pluginAudioElement"; // Assigning an ID to the audio element
+    this.setupEventListeners(); // Call setupEventListeners here
 
     const urlWithoutParams = options.url.split('?')[0];
     if (Hls.isSupported() && urlWithoutParams.endsWith('.m3u8')) {
-      this.hls = new Hls({
-        xhrSetup: (xhr: XMLHttpRequest) => {
-          xhr.withCredentials = false;
-        }
-      });
+      this.hls = new Hls();
       this.hls.loadSource(options.url);
       this.hls.attachMedia(this.audio);
       this.hls.on(Hls.Events.MANIFEST_PARSED, async () => {
