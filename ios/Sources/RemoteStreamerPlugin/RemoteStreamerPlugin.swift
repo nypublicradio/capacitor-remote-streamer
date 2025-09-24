@@ -13,7 +13,8 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlayingInfo", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "releasePlayer", returnType: CAPPluginReturnPromise)
     ]
     
     private let implementation = RemoteStreamer()
@@ -109,6 +110,12 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     
     @objc func stop(_ call: CAPPluginCall) {
         print("stop")
+        implementation.stop()
+        call.resolve()
+    }
+    
+    @objc func releasePlayer(_ call: CAPPluginCall) {
+        print("releasePlayer")
         implementation.stop()
         call.resolve()
     }
