@@ -9,6 +9,7 @@ export interface RemoteStreamerPlugin {
   setVolume(options: { volume: number }): Promise<void>;
   setPlaybackRate(options: { rate: number }): Promise<void>;
   setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean }): Promise<void>;
+  releasePlayer(): Promise<void>;
   addListener(
     eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error' | 'id3Metadata',
     listenerFunc: (data: RemoteStreamerEventData) => void

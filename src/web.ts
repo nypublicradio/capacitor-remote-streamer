@@ -112,6 +112,21 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     }
   }
 
+  async releasePlayer(): Promise<void> {
+    if (this.audio) {
+      this.audio.pause();
+      this.audio.src = '';
+      this.audio.load();
+      this.audio = null;
+      if (this.hls) {
+        this.hls.destroy();
+        this.hls = null;
+      }
+      this.stopTimeUpdates();
+      console.log('Player released');
+    }
+  }
+
   private setupID3Listeners(hls: Hls) {
     if (hls) {
       hls.on(Hls.Events.FRAG_PARSING_METADATA, (_, data) => {

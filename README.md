@@ -21,6 +21,7 @@ npx cap sync
 * [`setVolume(...)`](#setvolume)
 * [`setPlaybackRate(...)`](#setplaybackrate)
 * [`setNowPlayingInfo(...)`](#setnowplayinginfo)
+* [`releasePlayer()`](#releaseplayer)
 * [`addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'id3Metadata', ...)`](#addlistenererror--play--pause--stop--timeupdate--buffering--id3metadata-)
 * [`removeAllListeners()`](#removealllisteners)
 * [Interfaces](#interfaces)
@@ -119,6 +120,15 @@ setNowPlayingInfo(options: { title: string; artist: string; album: string; durat
 | Param         | Type                                                                                                                      |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | **`options`** | <code>{ title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean; }</code> |
+
+--------------------
+
+
+### releasePlayer()
+
+```typescript
+releasePlayer() => Promise<void>
+```
 
 --------------------
 
