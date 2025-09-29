@@ -336,6 +336,12 @@ public class RemoteStreamerPlugin extends Plugin implements AudioManager.OnAudio
         return null;
     }
 
+    @PluginMethod
+    public void releasePlayer(PluginCall call) {
+        releasePlayer();
+        call.resolve();
+    }
+
     private void releasePlayer() {
         if (player != null) {
             handler.post(() -> {
