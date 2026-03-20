@@ -70,6 +70,12 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
   async stop(): Promise<void> {
     if (this.audio) {
       this.audio.pause();
+      this.audio.onerror = null; 
+      this.audio.onwaiting = null;
+      this.audio.oncanplaythrough = null;
+      this.audio.onplaying = null;
+      this.audio.onpause = null;
+      this.audio.onended = null;
       this.audio.src = '';
       this.audio.load();
       this.audio.currentTime = 0;
