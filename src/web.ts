@@ -1,14 +1,14 @@
 import { WebPlugin } from '@capacitor/core';
 import Hls from 'hls.js';
 
-import type { RemoteStreamerPlugin } from './definitions';
+import type { RemoteStreamerPlugin, CarMediaItem } from './definitions';
 
 export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin {
   private audio: HTMLAudioElement | null = null;
   private intervalId: number | null = null;
   private hls: Hls | null = null;
 
-  async setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; }): Promise<void> {
+  async setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean }): Promise<void> {
     console.log("Setting now playing info", options);
   }
 
@@ -120,6 +120,10 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
 
   async releasePlayer(): Promise<void> {
     await this.stop();
+  }
+
+  async setMediaItems(options: { items: CarMediaItem[] }): Promise<void> {
+    console.log("Setting media items for car UI", options);
   }
 
   private setupID3Listeners(hls: Hls) {

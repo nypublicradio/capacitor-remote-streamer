@@ -34,6 +34,13 @@ import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.io.InputStream;
 
+import android.support.v4.media.MediaBrowserCompat;
+import android.support.v4.media.MediaDescriptionCompat;
+import android.net.Uri;
+import org.json.JSONArray;
+import java.util.ArrayList;
+import java.util.List;
+
 @CapacitorPlugin(name = "RemoteStreamer")
 public class RemoteStreamerPlugin extends Plugin {
     private boolean isLiveStream = false;
@@ -66,6 +73,45 @@ public class RemoteStreamerPlugin extends Plugin {
         getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
 
+
+    @PluginMethod
+    public void setMediaItems(PluginCall call) {
+        JSONArray items = call.getArray("items");
+        if (items == null) {
+            call.reject("items array is required");
+            return;
+        }
+
+        if (service != null) {
+            List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
+            for (int i = 0; i < items.length(); i++) {
+                try {
+                    JSObject item = JSObject.fromJSONObject(items.getJSONObject(i));
+                    String id = item.getString("id");
+                    String title = item.getString("title");
+                    String artist = item.getString("artist");
+                    String imageUrl = item.getString("imageUrl");
+                    String streamUrl = item.getString("streamUrl");
+
+                    MediaDescriptionCompat description = new MediaDescriptionCompat.Builder()
+                            .setMediaId(id)
+                            .setTitle(title)
+                            .setSubtitle(artist)
+                            .setIconUri(Uri.parse(imageUrl))
+                            .setMediaUri(Uri.parse(streamUrl))
+                            .build();
+
+                    mediaItems.add(new MediaBrowserCompat.MediaItem(description, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE));
+                } catch (JSONException e) {
+                    Log.e("streamer", "Error parsing media item at index " + i, e);
+                }
+            }
+            service.setMediaItems(mediaItems);
+            call.resolve();
+        } else {
+            call.reject("Service not initialized");
+        }
+    }
 
     @PluginMethod
     public void play(PluginCall call) {

@@ -14,6 +14,14 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback {
     }
 
     @Override
+    public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
+        // Find the URL for this mediaId if possible, or notify JS
+        JSObject data = new JSObject();
+        data.put("mediaId", mediaId);
+        plugin.onPlayerEvent("playFromMediaId", data);
+    }
+
+    @Override
     public void onPlay() {
         plugin.actionCallback("play");
     }

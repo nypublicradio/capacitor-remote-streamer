@@ -1,6 +1,7 @@
 import Foundation
 import Capacitor
 import MediaPlayer
+import CarPlay
 
 @objc(RemoteStreamerPlugin)
 public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -14,11 +15,15 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlayingInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "releasePlayer", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "releasePlayer", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setMediaItems", returnType: CAPPluginReturnPromise)
     ]
     
     private let implementation = RemoteStreamer()
-    
+    private var carPlayInterfaceController: CPInterfaceController?
+    private var carPlayListTemplate: CPListTemplate?
+    private var carPlayMediaItems: [[String: Any]] = []
+
     override public func load() {
         NotificationCenter.default.addObserver(self, selector: #selector(handlePlayEvent), name: Notification.Name("RemoteStreamerPlay"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handlePauseEvent), name: Notification.Name("RemoteStreamerPause"), object: nil)
@@ -56,6 +61,45 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
 
+    }
+
+    @objc func setMediaItems(_ call: CAPPluginCall) {
+        guard let items = call.getArray("items", [String: Any].self) else {
+            call.reject("Must provide items array")
+            return
+        }
+
+        self.carPlayMediaItems = items
+        updateCarPlayTemplate()
+        call.resolve()
+    }
+
+    func updateCarPlayTemplate() {
+        var listItems: [CPListItem] = []
+
+        for item in carPlayMediaItems {
+            let listItem = CPListItem(text: item["title"] as? String, detailText: item["artist"] as? String)
+            listItem.userInfo = item
+            listItem.handler = { [weak self] item, completion in
+                guard let self = self, let userInfo = item.userInfo as? [String: Any], let url = userInfo["streamUrl"] as? String else {
+                    completion()
+                    return
+                }
+                self.implementation.play(url: url) { _ in
+                    completion()
+                }
+                self.notifyListeners("playFromCarPlay", data: ["id": userInfo["id"] ?? ""])
+            }
+            listItems.append(listItem)
+        }
+
+        let section = CPListSection(items: listItems)
+        let listTemplate = CPListTemplate(title: "Live", sections: [section])
+        self.carPlayListTemplate = listTemplate
+
+        if let controller = carPlayInterfaceController {
+            controller.setRootTemplate(listTemplate, animated: true, completion: nil)
+        }
     }
 
     @objc func play(_ call: CAPPluginCall) {
@@ -232,4 +276,19 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+}
+
+extension RemoteStreamerPlugin: CPTemplateApplicationSceneDelegate {
+    public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didConnect interfaceController: CPInterfaceController) {
+        self.carPlayInterfaceController = interfaceController
+        if let listTemplate = self.carPlayListTemplate {
+            interfaceController.setRootTemplate(listTemplate, animated: true, completion: nil)
+        } else {
+            updateCarPlayTemplate()
+        }
+    }
+
+    public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didDisconnect interfaceController: CPInterfaceController) {
+        self.carPlayInterfaceController = nil
+    }
 }

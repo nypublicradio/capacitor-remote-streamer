@@ -52,7 +52,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import android.graphics.BitmapFactory;
 
-    public class RemoteStreamerService extends Service implements AudioManager.OnAudioFocusChangeListener {
+import androidx.media.MediaBrowserServiceCompat;
+import android.support.v4.media.MediaBrowserCompat;
+import android.os.Bundle;
+import java.util.ArrayList;
+import java.util.List;
+
+    public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
         private static final String TAG = "RemoteStreamerService";
 
         private MediaSessionCompat mediaSession;
@@ -94,10 +100,33 @@ import android.graphics.BitmapFactory;
 
         private final IBinder binder = new LocalBinder();
 
+        private List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
+        private static final String ROOT_ID = "root";
+
         public final class LocalBinder extends Binder {
             public RemoteStreamerService getService() {
                 return RemoteStreamerService.this;
             }
+        }
+
+        @Override
+        public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
+            // Basic validation - in a real app, you might check if the package is on an allowlist
+            return new BrowserRoot(ROOT_ID, null);
+        }
+
+        @Override
+        public void onLoadChildren(final String parentMediaId, final Result<List<MediaBrowserCompat.MediaItem>> result) {
+            if (ROOT_ID.equals(parentMediaId)) {
+                result.sendResult(mediaItems);
+            } else {
+                result.sendResult(null);
+            }
+        }
+
+        public void setMediaItems(List<MediaBrowserCompat.MediaItem> items) {
+            this.mediaItems = items;
+            notifyChildrenChanged(ROOT_ID);
         }
 
         @Override
