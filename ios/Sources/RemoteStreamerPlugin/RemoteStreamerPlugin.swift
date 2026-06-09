@@ -14,11 +14,12 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "seekTo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlayingInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "releasePlayer", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "releasePlayer", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setMediaItems", returnType: CAPPluginReturnPromise)
     ]
     
     private let implementation = RemoteStreamer()
-    
+
     override public func load() {
         NotificationCenter.default.addObserver(self, selector: #selector(handlePlayEvent), name: Notification.Name("RemoteStreamerPlay"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handlePauseEvent), name: Notification.Name("RemoteStreamerPause"), object: nil)
@@ -26,6 +27,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleEndedEvent), name: Notification.Name("RemoteStreamerEnded"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleCarPlayPlayRequest), name: Notification.Name("CarPlayPlayRequest"), object: nil)
         setupRemoteTransportControls()
     }
 
@@ -56,6 +58,43 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
 
+    }
+
+    @objc func setMediaItems(_ call: CAPPluginCall) {
+        guard let items = call.getArray("items", [String: Any].self) else {
+            call.reject("Must provide items array")
+            return
+        }
+
+        if #available(iOS 14.0, *) {
+            CarPlayMediaManager.shared.setMediaItems(items)
+        }
+        call.resolve()
+    }
+
+    @objc func handleCarPlayPlayRequest(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let streamUrl = userInfo["streamUrl"] as? String else { return }
+
+        // Enable command center controls for CarPlay-initiated playback
+        enableRemoteTransportControls()
+
+        implementation.play(url: streamUrl) { _ in }
+
+        // Update now playing info from stored media item data
+        if #available(iOS 14.0, *) {
+            if let items = CarPlayMediaManager.shared.mediaItems,
+               let itemId = userInfo["id"] as? String,
+               let matchingItem = items.first(where: { ($0["id"] as? String) == itemId }) {
+                let title = matchingItem["title"] as? String ?? ""
+                let artist = matchingItem["artist"] as? String ?? ""
+                let imageUrlString = matchingItem["imageUrl"] as? String ?? ""
+                updateNowPlayingInfo(title: title, artist: artist, album: "", duration: "0", imageURL: URL(string: imageUrlString), isLiveStream: true)
+            }
+        }
+
+        let itemId = userInfo["id"] as? String ?? ""
+        notifyListeners("playFromCarPlay", data: ["id": itemId])
     }
 
     @objc func play(_ call: CAPPluginCall) {

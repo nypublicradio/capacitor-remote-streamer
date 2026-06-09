@@ -52,7 +52,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import android.graphics.BitmapFactory;
 
-    public class RemoteStreamerService extends Service implements AudioManager.OnAudioFocusChangeListener {
+import androidx.media.MediaBrowserServiceCompat;
+import android.support.v4.media.MediaBrowserCompat;
+import android.support.v4.media.MediaDescriptionCompat;
+import android.os.Bundle;
+import java.util.ArrayList;
+import java.util.List;
+
+    public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
         private static final String TAG = "RemoteStreamerService";
 
         private MediaSessionCompat mediaSession;
@@ -94,10 +101,45 @@ import android.graphics.BitmapFactory;
 
         private final IBinder binder = new LocalBinder();
 
+        private List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
+        private static final String ROOT_ID = "root";
+
         public final class LocalBinder extends Binder {
             public RemoteStreamerService getService() {
                 return RemoteStreamerService.this;
             }
+        }
+
+        @Override
+        public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
+            // Basic validation - in a real app, you might check if the package is on an allowlist
+            return new BrowserRoot(ROOT_ID, null);
+        }
+
+        @Override
+        public void onLoadChildren(final String parentMediaId, final Result<List<MediaBrowserCompat.MediaItem>> result) {
+            if (ROOT_ID.equals(parentMediaId)) {
+                result.sendResult(mediaItems);
+            } else {
+                result.sendResult(new ArrayList<>());
+            }
+        }
+
+        public void setMediaItems(List<MediaBrowserCompat.MediaItem> items) {
+            this.mediaItems = items;
+            notifyChildrenChanged(ROOT_ID);
+        }
+
+        public String getStreamUrlForMediaId(String mediaId) {
+            for (MediaBrowserCompat.MediaItem item : mediaItems) {
+                MediaDescriptionCompat desc = item.getDescription();
+                if (desc.getMediaId() != null && desc.getMediaId().equals(mediaId)) {
+                    if (desc.getMediaUri() != null) {
+                        return desc.getMediaUri().toString();
+                    }
+                }
+            }
+            return null;
         }
 
         @Override
@@ -134,13 +176,21 @@ import android.graphics.BitmapFactory;
 
         @Override
         public IBinder onBind(Intent intent) {
+            // If the intent has the MediaBrowserService action, let the superclass handle it
+            // so Android Auto can connect via the media browser protocol.
+            if (intent != null && "android.media.browse.MediaBrowserService".equals(intent.getAction())) {
+                return super.onBind(intent);
+            }
             return binder;
         }
 
         @Override
         public boolean onUnbind(Intent intent) {
+            // Only destroy when the local plugin unbinds, not when Android Auto disconnects
+            if (intent != null && "android.media.browse.MediaBrowserService".equals(intent.getAction())) {
+                return super.onUnbind(intent);
+            }
             this.destroy();
-
             return super.onUnbind(intent);
         }
 
@@ -148,11 +198,14 @@ import android.graphics.BitmapFactory;
             this.plugin = plugin;
 
             mediaSession = new MediaSessionCompat(this, "WebViewMediaSession");
-            mediaSession.setCallback(new MediaSessionCallback(plugin));
+            mediaSession.setCallback(new MediaSessionCallback(plugin, this));
             mediaSession.setActive(true);
 
+            // Required for Android Auto to control playback via MediaBrowserServiceCompat
+            setSessionToken(mediaSession.getSessionToken());
+
             playbackStateBuilder = new PlaybackStateCompat.Builder()
-                    .setActions(PlaybackStateCompat.ACTION_PLAY)
+                    .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID)
                     .setState(PlaybackStateCompat.STATE_PAUSED, position, playbackSpeed);
             mediaSession.setPlaybackState(playbackStateBuilder.build());
 
