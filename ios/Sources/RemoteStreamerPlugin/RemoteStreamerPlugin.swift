@@ -1,7 +1,6 @@
 import Foundation
 import Capacitor
 import MediaPlayer
-import CarPlay
 
 @objc(RemoteStreamerPlugin)
 public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -20,9 +19,6 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     ]
     
     private let implementation = RemoteStreamer()
-    private var carPlayInterfaceController: CPInterfaceController?
-    private var carPlayListTemplate: CPListTemplate?
-    private var carPlayMediaItems: [[String: Any]] = []
 
     override public func load() {
         NotificationCenter.default.addObserver(self, selector: #selector(handlePlayEvent), name: Notification.Name("RemoteStreamerPlay"), object: nil)
@@ -31,6 +27,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleEndedEvent), name: Notification.Name("RemoteStreamerEnded"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleCarPlayPlayRequest), name: Notification.Name("CarPlayPlayRequest"), object: nil)
         setupRemoteTransportControls()
     }
 
@@ -69,37 +66,35 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
 
-        self.carPlayMediaItems = items
-        updateCarPlayTemplate()
+        if #available(iOS 14.0, *) {
+            CarPlayMediaManager.shared.setMediaItems(items)
+        }
         call.resolve()
     }
 
-    func updateCarPlayTemplate() {
-        var listItems: [CPListItem] = []
+    @objc func handleCarPlayPlayRequest(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let streamUrl = userInfo["streamUrl"] as? String else { return }
 
-        for item in carPlayMediaItems {
-            let listItem = CPListItem(text: item["title"] as? String, detailText: item["artist"] as? String)
-            listItem.userInfo = item
-            listItem.handler = { [weak self] item, completion in
-                guard let self = self, let userInfo = item.userInfo as? [String: Any], let url = userInfo["streamUrl"] as? String else {
-                    completion()
-                    return
-                }
-                self.implementation.play(url: url) { _ in
-                    completion()
-                }
-                self.notifyListeners("playFromCarPlay", data: ["id": userInfo["id"] ?? ""])
+        // Enable command center controls for CarPlay-initiated playback
+        enableRemoteTransportControls()
+
+        implementation.play(url: streamUrl) { _ in }
+
+        // Update now playing info from stored media item data
+        if #available(iOS 14.0, *) {
+            if let items = CarPlayMediaManager.shared.mediaItems,
+               let itemId = userInfo["id"] as? String,
+               let matchingItem = items.first(where: { ($0["id"] as? String) == itemId }) {
+                let title = matchingItem["title"] as? String ?? ""
+                let artist = matchingItem["artist"] as? String ?? ""
+                let imageUrlString = matchingItem["imageUrl"] as? String ?? ""
+                updateNowPlayingInfo(title: title, artist: artist, album: "", duration: "0", imageURL: URL(string: imageUrlString), isLiveStream: true)
             }
-            listItems.append(listItem)
         }
 
-        let section = CPListSection(items: listItems)
-        let listTemplate = CPListTemplate(title: "Live", sections: [section])
-        self.carPlayListTemplate = listTemplate
-
-        if let controller = carPlayInterfaceController {
-            controller.setRootTemplate(listTemplate, animated: true, completion: nil)
-        }
+        let itemId = userInfo["id"] as? String ?? ""
+        notifyListeners("playFromCarPlay", data: ["id": itemId])
     }
 
     @objc func play(_ call: CAPPluginCall) {
@@ -276,19 +271,4 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-}
-
-extension RemoteStreamerPlugin: CPTemplateApplicationSceneDelegate {
-    public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didConnect interfaceController: CPInterfaceController) {
-        self.carPlayInterfaceController = interfaceController
-        if let listTemplate = self.carPlayListTemplate {
-            interfaceController.setRootTemplate(listTemplate, animated: true, completion: nil)
-        } else {
-            updateCarPlayTemplate()
-        }
-    }
-
-    public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didDisconnect interfaceController: CPInterfaceController) {
-        self.carPlayInterfaceController = nil
-    }
 }
