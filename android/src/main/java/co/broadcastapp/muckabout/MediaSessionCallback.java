@@ -17,7 +17,6 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback {
 
     @Override
     public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
-        // Look up the stream URL from stored media items and start playback
         if (service != null) {
             String streamUrl = service.getStreamUrlForMediaId(mediaId);
             if (streamUrl != null) {

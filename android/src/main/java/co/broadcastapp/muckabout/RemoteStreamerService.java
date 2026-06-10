@@ -58,6 +58,8 @@ import android.support.v4.media.MediaDescriptionCompat;
 import android.os.Bundle;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
     public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
         private static final String TAG = "RemoteStreamerService";
@@ -102,7 +104,17 @@ import java.util.List;
         private final IBinder binder = new LocalBinder();
 
         private List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
+        // Cache of mediaId -> stream URI for items served through the browse tree
+        private final Map<String, String> browseUriCache = new HashMap<>();
         private static final String ROOT_ID = "root";
+        private static final String CATEGORY_LIVE = "live";
+        private static final String CATEGORY_NEWS = "news";
+        private static final String CATEGORY_TOP_STORIES = "top_stories";
+        private static final String CATEGORY_SHOWS = "shows";
+        private static final String SHOW_PREFIX = "show_";
+
+        private BffApiClient bffApiClient;
+        private ExecutorService executor;
 
         public final class LocalBinder extends Binder {
             public RemoteStreamerService getService() {
@@ -112,17 +124,124 @@ import java.util.List;
 
         @Override
         public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
-            // Basic validation - in a real app, you might check if the package is on an allowlist
             return new BrowserRoot(ROOT_ID, null);
         }
 
         @Override
         public void onLoadChildren(final String parentMediaId, final Result<List<MediaBrowserCompat.MediaItem>> result) {
-            if (ROOT_ID.equals(parentMediaId)) {
-                result.sendResult(mediaItems);
-            } else {
-                result.sendResult(new ArrayList<>());
+            // Detach so we can load asynchronously
+            result.detach();
+
+            executor.execute(() -> {
+                List<MediaBrowserCompat.MediaItem> items;
+                switch (parentMediaId) {
+                    case ROOT_ID:
+                        items = buildRootMenu();
+                        break;
+                    case CATEGORY_LIVE:
+                        items = buildLiveStreams();
+                        break;
+                    case CATEGORY_NEWS:
+                        items = buildLatestNews();
+                        break;
+                    case CATEGORY_TOP_STORIES:
+                        items = buildTopStories();
+                        break;
+                    case CATEGORY_SHOWS:
+                        items = buildAllShows();
+                        break;
+                    default:
+                        if (parentMediaId.startsWith(SHOW_PREFIX)) {
+                            String showSlug = parentMediaId.substring(SHOW_PREFIX.length());
+                            items = buildEpisodes(showSlug);
+                        } else {
+                            items = new ArrayList<>();
+                        }
+                        break;
+                }
+                result.sendResult(items);
+            });
+        }
+
+        private List<MediaBrowserCompat.MediaItem> buildRootMenu() {
+            List<MediaBrowserCompat.MediaItem> root = new ArrayList<>();
+            root.add(makeBrowsableItem(CATEGORY_LIVE, "Live Radio", "Listen to WNYC live streams"));
+            root.add(makeBrowsableItem(CATEGORY_NEWS, "Latest News", "NYC Headlines & NPR News Now"));
+            root.add(makeBrowsableItem(CATEGORY_TOP_STORIES, "Top Stories", "Curated stories from WNYC"));
+            root.add(makeBrowsableItem(CATEGORY_SHOWS, "All Shows", "Browse all WNYC shows"));
+            return root;
+        }
+
+        private List<MediaBrowserCompat.MediaItem> buildLiveStreams() {
+            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
+            List<BffApiClient.LiveStream> streams = bffApiClient.fetchLiveStreams();
+            for (BffApiClient.LiveStream stream : streams) {
+                String subtitle = stream.currentShowTitle.isEmpty() ? "Live" : stream.currentShowTitle;
+                items.add(makePlayableItem("live_" + stream.slug, stream.stationName, subtitle, stream.hlsUrl, stream.imageUrl));
             }
+            return items;
+        }
+
+        private List<MediaBrowserCompat.MediaItem> buildLatestNews() {
+            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
+            List<BffApiClient.NewsItem> news = bffApiClient.fetchLatestNews();
+            for (BffApiClient.NewsItem n : news) {
+                String subtitle = n.showTitle;
+                if (n.durationSeconds > 0) {
+                    subtitle += " | " + (n.durationSeconds / 60) + " min";
+                }
+                items.add(makePlayableItem("news_" + n.id, n.title, subtitle, n.audioUrl, n.imageUrl));
+            }
+            return items;
+        }
+
+        private List<MediaBrowserCompat.MediaItem> buildTopStories() {
+            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
+            List<BffApiClient.StoryItem> stories = bffApiClient.fetchTopStories();
+            for (BffApiClient.StoryItem story : stories) {
+                String subtitle = story.showTitle;
+                if (story.durationSeconds > 0) {
+                    subtitle += " | " + (story.durationSeconds / 60) + " min";
+                }
+                items.add(makePlayableItem("story_" + story.id, story.title, subtitle, story.audioUrl, story.imageUrl));
+            }
+            return items;
+        }
+
+        private List<MediaBrowserCompat.MediaItem> buildAllShows() {
+            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
+            List<BffApiClient.Show> shows = bffApiClient.fetchAllShows();
+            for (BffApiClient.Show show : shows) {
+                MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
+                        .setMediaId(SHOW_PREFIX + show.slug)
+                        .setTitle(show.title)
+                        .setIconUri(show.imageUrl.isEmpty() ? null : android.net.Uri.parse(show.imageUrl))
+                        .build();
+                items.add(new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+            }
+            return items;
+        }
+
+        private List<MediaBrowserCompat.MediaItem> buildEpisodes(String showSlug) {
+            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
+            List<BffApiClient.Episode> episodes = bffApiClient.fetchEpisodes(showSlug);
+            for (BffApiClient.Episode ep : episodes) {
+                String subtitle = ep.showTitle;
+                if (ep.durationSeconds > 0) {
+                    subtitle += " | " + (ep.durationSeconds / 60) + " min";
+                }
+                items.add(makePlayableItem("episode_" + ep.id, ep.title, subtitle, ep.audioUrl, ep.imageUrl));
+            }
+            return items;
+        }
+
+        private MediaBrowserCompat.MediaItem makeBrowsableItem(String mediaId, String title, String subtitle) {
+            MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
+                    .setMediaId(mediaId)
+                    .setTitle(title)
+                    .setSubtitle(subtitle)
+                    .build();
+            return new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE);
         }
 
         public void setMediaItems(List<MediaBrowserCompat.MediaItem> items) {
@@ -131,6 +250,7 @@ import java.util.List;
         }
 
         public String getStreamUrlForMediaId(String mediaId) {
+            // First check manually-set media items
             for (MediaBrowserCompat.MediaItem item : mediaItems) {
                 MediaDescriptionCompat desc = item.getDescription();
                 if (desc.getMediaId() != null && desc.getMediaId().equals(mediaId)) {
@@ -139,7 +259,23 @@ import java.util.List;
                     }
                 }
             }
-            return null;
+            // Then check the browse tree cache
+            return browseUriCache.get(mediaId);
+        }
+
+        private MediaBrowserCompat.MediaItem makePlayableItem(String mediaId, String title, String subtitle, String streamUrl, String imageUrl) {
+            // Cache the URI for later playback lookup
+            if (streamUrl != null && !streamUrl.isEmpty()) {
+                browseUriCache.put(mediaId, streamUrl);
+            }
+            MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
+                    .setMediaId(mediaId)
+                    .setTitle(title)
+                    .setSubtitle(subtitle)
+                    .setMediaUri(streamUrl == null || streamUrl.isEmpty() ? null : android.net.Uri.parse(streamUrl))
+                    .setIconUri(imageUrl == null || imageUrl.isEmpty() ? null : android.net.Uri.parse(imageUrl))
+                    .build();
+            return new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE);
         }
 
         @Override
@@ -147,6 +283,8 @@ import java.util.List;
             super.onCreate();
             handler = new Handler(Looper.getMainLooper());
             audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            executor = Executors.newSingleThreadExecutor();
+            bffApiClient = new BffApiClient("https://demo.native-app.wnyc.org");
             
             String versionName = "1.0"; // Default version
             String deviceModel = android.os.Build.MODEL;
@@ -266,6 +404,9 @@ import java.util.List;
 
         public void destroy() {
             releasePlayer();
+            if (executor != null) {
+                executor.shutdownNow();
+            }
             stopForeground(true);
             //mediaSession.setActive(false);
             notificationManager.cancel(NOTIFICATION_ID);
