@@ -330,6 +330,42 @@ import java.util.concurrent.Executors;
             audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             executor = Executors.newSingleThreadExecutor();
             bffApiClient = new BffApiClient("https://demo.native-app.wnyc.org");
+
+            // Initialize MediaSession immediately so Android Auto can connect
+            // without waiting for the WebView plugin to bind.
+            mediaSession = new MediaSessionCompat(this, "WebViewMediaSession");
+            mediaSession.setCallback(new MediaSessionCallback(null, this));
+            mediaSession.setActive(true);
+            setSessionToken(mediaSession.getSessionToken());
+
+            playbackStateBuilder = new PlaybackStateCompat.Builder()
+                    .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID)
+                    .setState(PlaybackStateCompat.STATE_PAUSED, 0, 1.0f);
+            mediaSession.setPlaybackState(playbackStateBuilder.build());
+
+            mediaMetadataBuilder = new MediaMetadataCompat.Builder()
+                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, 0);
+            mediaSession.setMetadata(mediaMetadataBuilder.build());
+
+            // Prepare default content (WNYC newscast) so Android Auto doesn't show a spinner
+            executor.execute(() -> {
+                List<BffApiClient.NewsItem> news = bffApiClient.fetchLatestNews();
+                if (!news.isEmpty()) {
+                    BffApiClient.NewsItem defaultItem = news.get(0); // WNYC local newscast
+                    String mediaId = "news_" + defaultItem.id;
+                    browseUriCache.put(mediaId, defaultItem.audioUrl);
+                    browseMetadataCache.put(mediaId, new String[]{
+                        defaultItem.title,
+                        defaultItem.showTitle,
+                        defaultItem.imageUrl
+                    });
+                    handler.post(() -> {
+                        setTitle(defaultItem.title);
+                        setArtist(defaultItem.showTitle);
+                        update();
+                    });
+                }
+            });
             
             String versionName = "1.0"; // Default version
             String deviceModel = android.os.Build.MODEL;
@@ -380,21 +416,8 @@ import java.util.concurrent.Executors;
         public void connectAndInitialize(RemoteStreamerPlugin plugin, Intent intent) {
             this.plugin = plugin;
 
-            mediaSession = new MediaSessionCompat(this, "WebViewMediaSession");
+            // Update the callback with the plugin reference (was null during onCreate)
             mediaSession.setCallback(new MediaSessionCallback(plugin, this));
-            mediaSession.setActive(true);
-
-            // Required for Android Auto to control playback via MediaBrowserServiceCompat
-            setSessionToken(mediaSession.getSessionToken());
-
-            playbackStateBuilder = new PlaybackStateCompat.Builder()
-                    .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID)
-                    .setState(PlaybackStateCompat.STATE_PAUSED, position, playbackSpeed);
-            mediaSession.setPlaybackState(playbackStateBuilder.build());
-
-            mediaMetadataBuilder = new MediaMetadataCompat.Builder()
-                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration);
-            mediaSession.setMetadata(mediaMetadataBuilder.build());
 
             notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

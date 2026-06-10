@@ -24,51 +24,59 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback {
                 service.play(streamUrl);
             }
         }
-        // Also notify JS layer
-        JSObject data = new JSObject();
-        data.put("mediaId", mediaId);
-        plugin.onPlayerEvent("playFromMediaId", data);
+        // Also notify JS layer if plugin is connected
+        if (plugin != null) {
+            JSObject data = new JSObject();
+            data.put("mediaId", mediaId);
+            plugin.onPlayerEvent("playFromMediaId", data);
+        }
     }
 
     @Override
     public void onPlay() {
-        plugin.actionCallback("play");
+        if (plugin != null) plugin.actionCallback("play");
+        if (service != null) service.resume();
     }
 
     @Override
     public void onPause() {
-        plugin.actionCallback("pause");
+        if (plugin != null) plugin.actionCallback("pause");
+        if (service != null) service.pause();
     }
 
     @Override
     public void onSeekTo(long pos) {
-        JSObject data = new JSObject();
-        data.put("seekTime", pos);
-        plugin.actionCallback("seekto", data);
+        if (plugin != null) {
+            JSObject data = new JSObject();
+            data.put("seekTime", pos);
+            plugin.actionCallback("seekto", data);
+        }
+        if (service != null) service.seekTo(pos);
     }
 
     @Override
     public void onRewind() {
-        plugin.actionCallback("seekbackward");
+        if (plugin != null) plugin.actionCallback("seekbackward");
     }
 
     @Override
     public void onFastForward() {
-        plugin.actionCallback("seekforward");
+        if (plugin != null) plugin.actionCallback("seekforward");
     }
 
     @Override
     public void onSkipToPrevious() {
-        plugin.actionCallback("previoustrack");
+        if (plugin != null) plugin.actionCallback("previoustrack");
     }
 
     @Override
     public void onSkipToNext() {
-        plugin.actionCallback("nexttrack");
+        if (plugin != null) plugin.actionCallback("nexttrack");
     }
 
     @Override
     public void onStop() {
-        plugin.actionCallback("stop");
+        if (plugin != null) plugin.actionCallback("stop");
+        if (service != null) service.stop();
     }
 }
