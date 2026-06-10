@@ -20,6 +20,7 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback {
         if (service != null) {
             String streamUrl = service.getStreamUrlForMediaId(mediaId);
             if (streamUrl != null) {
+                service.updateMetadataForMediaId(mediaId);
                 service.play(streamUrl);
             }
         }

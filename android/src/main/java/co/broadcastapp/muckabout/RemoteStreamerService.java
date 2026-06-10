@@ -106,6 +106,8 @@ import java.util.concurrent.Executors;
         private List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
         // Cache of mediaId -> stream URI for items served through the browse tree
         private final Map<String, String> browseUriCache = new HashMap<>();
+        // Cache of mediaId -> metadata (title, subtitle, imageUrl) for updating MediaSession
+        private final Map<String, String[]> browseMetadataCache = new HashMap<>();
         private static final String ROOT_ID = "root";
         private static final String CATEGORY_LIVE = "live";
         private static final String CATEGORY_NEWS = "news";
@@ -263,11 +265,54 @@ import java.util.concurrent.Executors;
             return browseUriCache.get(mediaId);
         }
 
+        /**
+         * Updates the MediaSession metadata from the browse cache for a given mediaId.
+         * Called when playback starts from Android Auto browse tree.
+         */
+        public void updateMetadataForMediaId(String mediaId) {
+            String[] meta = browseMetadataCache.get(mediaId);
+            if (meta != null) {
+                setTitle(meta[0]);
+                setArtist(meta[1]);
+                setAlbum("");
+                // Load artwork asynchronously if image URL is available
+                if (!meta[2].isEmpty()) {
+                    final String imageUrl = meta[2];
+                    executor.execute(() -> {
+                        try {
+                            URL url = new URL(imageUrl);
+                            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                            conn.setConnectTimeout(5000);
+                            conn.setReadTimeout(5000);
+                            InputStream is = conn.getInputStream();
+                            Bitmap bmp = BitmapFactory.decodeStream(is);
+                            is.close();
+                            conn.disconnect();
+                            if (bmp != null) {
+                                handler.post(() -> {
+                                    setArtwork(bmp);
+                                    update();
+                                });
+                            }
+                        } catch (Exception e) {
+                            Log.w(TAG, "Failed to load artwork for " + mediaId, e);
+                        }
+                    });
+                }
+                update();
+            }
+        }
+
         private MediaBrowserCompat.MediaItem makePlayableItem(String mediaId, String title, String subtitle, String streamUrl, String imageUrl) {
-            // Cache the URI for later playback lookup
+            // Cache the URI and metadata for later playback lookup
             if (streamUrl != null && !streamUrl.isEmpty()) {
                 browseUriCache.put(mediaId, streamUrl);
             }
+            browseMetadataCache.put(mediaId, new String[]{
+                title != null ? title : "",
+                subtitle != null ? subtitle : "",
+                imageUrl != null ? imageUrl : ""
+            });
             MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
                     .setMediaId(mediaId)
                     .setTitle(title)
@@ -568,7 +613,15 @@ import java.util.concurrent.Executors;
             if (url == null) return;
 
             handler.post(() -> {
-                releasePlayer();
+                // Release old player synchronously (we're already on the handler thread)
+                if (player != null) {
+                    Log.d("RemoteStreamerService", "releasing player before new play");
+                    stopUpdatingTime();
+                    player.release();
+                    player = null;
+                    audioManager.abandonAudioFocusRequest(focusRequest);
+                }
+
                 player = new ExoPlayer.Builder(this).build();
 
                 MediaSource mediaSource;
