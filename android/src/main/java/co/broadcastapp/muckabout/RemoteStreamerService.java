@@ -561,7 +561,7 @@ import java.util.concurrent.Executors;
                 int notificationActionIndex = 0;
                 int compactNotificationActionIndicesIndex = 0;
                 for (String actionName : possibleActions) {
-                    if (plugin.hasActionHandler(actionName)) {
+                    if (plugin != null && plugin.hasActionHandler(actionName)) {
                         if (actionName.equals("play") && playbackState != PlaybackStateCompat.STATE_PAUSED) {
                             continue;
                         }
@@ -573,7 +573,7 @@ import java.util.concurrent.Executors;
                             activePlaybackStateActions = activePlaybackStateActions | playbackStateActions.get(actionName);
                         }
 
-                        if (notificationActions.containsKey(actionName)) {
+                        if (notificationActions.containsKey(actionName) && notificationBuilder != null) {
                             notificationBuilder.addAction(notificationActions.get(actionName));
                             if (possibleCompactViewActions.contains(actionName) && compactNotificationActionIndicesIndex < 3) {
                                 activeCompactViewActionIndices[compactNotificationActionIndicesIndex] = notificationActionIndex;
