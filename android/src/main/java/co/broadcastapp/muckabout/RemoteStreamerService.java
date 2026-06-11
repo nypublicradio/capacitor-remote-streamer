@@ -63,6 +63,10 @@ import java.util.concurrent.Executors;
 
     public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
         private static final String TAG = "RemoteStreamerService";
+        private static final String EXTRA_CONTENT_STYLE_BROWSABLE_HINT = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT";
+        private static final String EXTRA_CONTENT_STYLE_PLAYABLE_HINT = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT";
+        private static final int CONTENT_STYLE_LIST_ITEM = 1;
+        private static final int CONTENT_STYLE_GRID_ITEM = 2;
 
         private MediaSessionCompat mediaSession;
         private PlaybackStateCompat.Builder playbackStateBuilder;
@@ -126,7 +130,10 @@ import java.util.concurrent.Executors;
 
         @Override
         public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
-            return new BrowserRoot(ROOT_ID, null);
+            Bundle extras = new Bundle();
+            extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+            extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+            return new BrowserRoot(ROOT_ID, extras);
         }
 
         @Override
@@ -170,7 +177,17 @@ import java.util.concurrent.Executors;
             root.add(makeBrowsableItem(CATEGORY_LIVE, "Live Radio", "Listen to WNYC live streams"));
             root.add(makeBrowsableItem(CATEGORY_NEWS, "Latest News", "NYC Headlines & NPR News Now"));
             root.add(makeBrowsableItem(CATEGORY_TOP_STORIES, "Top Stories", "Curated stories from WNYC"));
-            root.add(makeBrowsableItem(CATEGORY_SHOWS, "All Shows", "Browse all WNYC shows"));
+            // All Shows uses grid layout for the show tiles
+            Bundle showsExtras = new Bundle();
+            showsExtras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_GRID_ITEM);
+            showsExtras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+            MediaDescriptionCompat showsDesc = new MediaDescriptionCompat.Builder()
+                    .setMediaId(CATEGORY_SHOWS)
+                    .setTitle("All Shows")
+                    .setSubtitle("Browse all WNYC shows")
+                    .setExtras(showsExtras)
+                    .build();
+            root.add(new MediaBrowserCompat.MediaItem(showsDesc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
             return root;
         }
 
@@ -214,10 +231,15 @@ import java.util.concurrent.Executors;
             List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
             List<BffApiClient.Show> shows = bffApiClient.fetchAllShows();
             for (BffApiClient.Show show : shows) {
+                // Each show's children (episodes) should render as a single-column list
+                Bundle extras = new Bundle();
+                extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+                extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
                 MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
                         .setMediaId(SHOW_PREFIX + show.slug)
                         .setTitle(show.title)
-                        .setIconUri(show.imageUrl.isEmpty() ? null : android.net.Uri.parse(show.imageUrl))
+                        .setExtras(extras)
+                        .setIconUri(resolveItemIconUri(show.imageUrl))
                         .build();
                 items.add(new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
             }
@@ -238,10 +260,12 @@ import java.util.concurrent.Executors;
         }
 
         private MediaBrowserCompat.MediaItem makeBrowsableItem(String mediaId, String title, String subtitle) {
+            Bundle extras = makeListContentStyleExtras();
             MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
                     .setMediaId(mediaId)
                     .setTitle(title)
                     .setSubtitle(subtitle)
+                .setExtras(extras)
                     .build();
             return new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE);
         }
@@ -313,14 +337,30 @@ import java.util.concurrent.Executors;
                 subtitle != null ? subtitle : "",
                 imageUrl != null ? imageUrl : ""
             });
+            Bundle extras = makeListContentStyleExtras();
             MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
                     .setMediaId(mediaId)
                     .setTitle(title)
                     .setSubtitle(subtitle)
+                    .setExtras(extras)
                     .setMediaUri(streamUrl == null || streamUrl.isEmpty() ? null : android.net.Uri.parse(streamUrl))
-                    .setIconUri(imageUrl == null || imageUrl.isEmpty() ? null : android.net.Uri.parse(imageUrl))
+                    .setIconUri(resolveItemIconUri(imageUrl))
                     .build();
             return new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE);
+        }
+
+        private android.net.Uri resolveItemIconUri(String imageUrl) {
+            if (imageUrl != null && !imageUrl.trim().isEmpty() && !imageUrl.equals("null")) {
+                return android.net.Uri.parse(imageUrl);
+            }
+            return android.net.Uri.parse("android.resource://" + getPackageName() + "/drawable/fallback_ep");
+        }
+
+        private Bundle makeListContentStyleExtras() {
+            Bundle extras = new Bundle();
+            extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+            extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+            return extras;
         }
 
         @Override
@@ -329,7 +369,7 @@ import java.util.concurrent.Executors;
             handler = new Handler(Looper.getMainLooper());
             audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             executor = Executors.newSingleThreadExecutor();
-            bffApiClient = new BffApiClient("https://demo.native-app.wnyc.org");
+            bffApiClient = new BffApiClient("https://wnyc.org");
 
             // Initialize MediaSession immediately so Android Auto can connect
             // without waiting for the WebView plugin to bind.
@@ -339,7 +379,10 @@ import java.util.concurrent.Executors;
             setSessionToken(mediaSession.getSessionToken());
 
             playbackStateBuilder = new PlaybackStateCompat.Builder()
-                    .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID)
+                    .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
+                            | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID
+                            | PlaybackStateCompat.ACTION_SEEK_TO | PlaybackStateCompat.ACTION_STOP
+                            | PlaybackStateCompat.ACTION_FAST_FORWARD | PlaybackStateCompat.ACTION_REWIND)
                     .setState(PlaybackStateCompat.STATE_PAUSED, 0, 1.0f);
             mediaSession.setPlaybackState(playbackStateBuilder.build());
 
@@ -558,10 +601,32 @@ import java.util.concurrent.Executors;
                 long activePlaybackStateActions = 0;
                 int[] activeCompactViewActionIndices = new int[3];
 
+                // Always advertise basic transport actions for Android Auto since
+                // playback is handled natively by the service
+                if (playbackStateActions.isEmpty()) {
+                    // connectAndInitialize() hasn't been called yet (Android Auto playing before JS init)
+                    // Hardcode the essential actions so DHU shows proper controls
+                    activePlaybackStateActions = PlaybackStateCompat.ACTION_PLAY
+                            | PlaybackStateCompat.ACTION_PAUSE
+                            | PlaybackStateCompat.ACTION_PLAY_PAUSE
+                            | PlaybackStateCompat.ACTION_SEEK_TO
+                            | PlaybackStateCompat.ACTION_STOP
+                            | PlaybackStateCompat.ACTION_FAST_FORWARD
+                            | PlaybackStateCompat.ACTION_REWIND;
+                } else {
+                    String[] nativeActions = {"play", "pause", "seekto", "stop", "seekforward", "seekbackward"};
+                    for (String nativeAction : nativeActions) {
+                        if (playbackStateActions.containsKey(nativeAction)) {
+                            activePlaybackStateActions = activePlaybackStateActions | playbackStateActions.get(nativeAction);
+                        }
+                    }
+                }
+
                 int notificationActionIndex = 0;
                 int compactNotificationActionIndicesIndex = 0;
                 for (String actionName : possibleActions) {
-                    if (plugin != null && plugin.hasActionHandler(actionName)) {
+                    boolean actionAvailable = (plugin != null && plugin.hasActionHandler(actionName));
+                    if (actionAvailable) {
                         if (actionName.equals("play") && playbackState != PlaybackStateCompat.STATE_PAUSED) {
                             continue;
                         }
