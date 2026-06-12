@@ -175,9 +175,9 @@ class RemoteStreamer: NSObject {
         guard reconnectAttempts < maxReconnectAttempts else {
             print("RemoteStreamer: Max reconnect attempts (\(maxReconnectAttempts)) reached, giving up")
             isReconnecting = false
+            wasPlayingBeforeStall = true  // so handleNetworkRestored will retry when network returns
             cleanupFailedPlayer()
-            NotificationCenter.default.post(name: Notification.Name("RemoteStreamerStop"), object: nil,
-                userInfo: ["error": "Stream disconnected after \(maxReconnectAttempts) reconnect attempts"])
+            NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPause"), object: nil)
             return
         }
 
@@ -274,10 +274,14 @@ class RemoteStreamer: NSObject {
             if self.player?.timeControlStatus == .waitingToPlayAtSpecifiedRate ||
                self.player?.status == .failed {
                 if self.isLiveStream {
-                    print("RemoteStreamer: Stall watchdog fired after \(self.stallTimeoutSeconds)s, forcing reconnect")
-                    self.reconnectAttempts = 0
-                    self.isReconnecting = true
-                    self.performReconnect(url: url)
+                    // If already reconnecting, don't start another cycle — let it finish
+                    guard !self.isReconnecting else {
+                        print("RemoteStreamer: Stall watchdog fired but already reconnecting, skipping")
+                        return
+                    }
+                    print("RemoteStreamer: Stall watchdog fired after \(self.stallTimeoutSeconds)s, attempting reconnect")
+                    self.wasPlayingBeforeStall = true
+                    self.reconnect()
                 } else {
                     // On-demand: just mark as paused/stalled, wait for network
                     print("RemoteStreamer: Stall watchdog fired for on-demand, pausing at position \(self.savedPosition)s")
@@ -341,13 +345,15 @@ class RemoteStreamer: NSObject {
                 NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPlay"), object: nil)
             case .waitingToPlayAtSpecifiedRate:
                 NotificationCenter.default.post(name: Notification.Name("RemoteStreamerBuffering"), object: nil)
-                // Save position and start stall watchdog for both live and on-demand
+                // Save position and start stall watchdog (but not if already reconnecting)
                 self.wasPlayingBeforeStall = true
                 if !self.isLiveStream, let currentTime = self.player?.currentTime() {
                     let pos = currentTime.seconds
                     if pos > 0 && pos.isFinite { self.savedPosition = pos }
                 }
-                self.startStallWatchdog()
+                if !self.isReconnecting {
+                    self.startStallWatchdog()
+                }
             @unknown default:
                 break
             }

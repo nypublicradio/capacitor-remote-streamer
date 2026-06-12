@@ -6,6 +6,7 @@ import com.getcapacitor.JSObject;
 
 public class MediaSessionCallback extends MediaSessionCompat.Callback {
     private static final String TAG = "MediaSessionCallback";
+    private static final long SEEK_INCREMENT_MS = 10000; // 10 seconds
 
     private final RemoteStreamerPlugin plugin;
     private final RemoteStreamerService service;
@@ -57,20 +58,32 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback {
     @Override
     public void onRewind() {
         if (plugin != null) plugin.actionCallback("seekbackward");
+        // Native seek for Android Auto
+        if (service != null) service.seekBy(-SEEK_INCREMENT_MS);
     }
 
     @Override
     public void onFastForward() {
         if (plugin != null) plugin.actionCallback("seekforward");
+        // Native seek for Android Auto
+        if (service != null) service.seekBy(SEEK_INCREMENT_MS);
     }
 
     @Override
     public void onSkipToPrevious() {
+        if (service != null && !service.isLiveStream()) {
+            // On-demand: seek backward 10 seconds
+            service.seekBy(-SEEK_INCREMENT_MS);
+        }
         if (plugin != null) plugin.actionCallback("previoustrack");
     }
 
     @Override
     public void onSkipToNext() {
+        if (service != null && !service.isLiveStream()) {
+            // On-demand: seek forward 10 seconds
+            service.seekBy(SEEK_INCREMENT_MS);
+        }
         if (plugin != null) plugin.actionCallback("nexttrack");
     }
 

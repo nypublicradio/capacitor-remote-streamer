@@ -631,12 +631,18 @@ import android.net.NetworkRequest;
                     activePlaybackStateActions = PlaybackStateCompat.ACTION_PLAY
                             | PlaybackStateCompat.ACTION_PAUSE
                             | PlaybackStateCompat.ACTION_PLAY_PAUSE
-                            | PlaybackStateCompat.ACTION_SEEK_TO
-                            | PlaybackStateCompat.ACTION_STOP
-                            | PlaybackStateCompat.ACTION_FAST_FORWARD
-                            | PlaybackStateCompat.ACTION_REWIND;
+                            | PlaybackStateCompat.ACTION_STOP;
+                    if (!isLiveStream) {
+                        activePlaybackStateActions |= PlaybackStateCompat.ACTION_SEEK_TO
+                                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+                                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+                                | PlaybackStateCompat.ACTION_REWIND
+                                | PlaybackStateCompat.ACTION_FAST_FORWARD;
+                    }
                 } else {
-                    String[] nativeActions = {"play", "pause", "seekto", "stop", "seekforward", "seekbackward"};
+                    String[] nativeActions = isLiveStream
+                            ? new String[]{"play", "pause", "stop"}
+                            : new String[]{"play", "pause", "seekto", "stop", "seekforward", "seekbackward", "previoustrack", "nexttrack"};
                     for (String nativeAction : nativeActions) {
                         if (playbackStateActions.containsKey(nativeAction)) {
                             activePlaybackStateActions = activePlaybackStateActions | playbackStateActions.get(nativeAction);
@@ -745,7 +751,7 @@ import android.net.NetworkRequest;
                     mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
                             .createMediaSource(MediaItem.fromUri(url));
                     this.isLiveStream = true;
-                    setDuration(0);
+                    setDuration(-1); // -1 signals live/unknown duration to Android Auto (hides timeline)
                     setPosition(0);
                 } else {
                     mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
@@ -757,6 +763,7 @@ import android.net.NetworkRequest;
                 player.prepare();
 
                 setupPlayerListeners();
+                updatePossibleActions(); // refresh actions (seek available for on-demand, not for live)
 
                 int focusResult = audioManager.requestAudioFocus(focusRequest);
                 if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
@@ -785,57 +792,73 @@ import android.net.NetworkRequest;
         }
 
         public void resume() {
-            // For live streams: if player is null, errored, or stalled (buffering), rebuild from scratch
-            if (isLiveStream && currentUrl != null) {
-                boolean needsRebuild = (player == null)
-                        || (player.getPlayerError() != null)
-                        || (player.getPlaybackState() == Player.STATE_BUFFERING)
-                        || (player.getPlaybackState() == Player.STATE_IDLE);
-                if (needsRebuild) {
-                    Log.d(TAG, "resume() on stalled/failed live stream, rebuilding player");
-                    cancelReconnect();
-                    reconnectAttempts = 0;
-                    isReconnecting = true;
-                    performReconnect(currentUrl);
-                    return;
+            handler.post(() -> {
+                // For live streams: if player is null, errored, or stalled (buffering), rebuild from scratch
+                if (isLiveStream && currentUrl != null) {
+                    boolean needsRebuild = (player == null)
+                            || (player.getPlayerError() != null)
+                            || (player.getPlaybackState() == Player.STATE_BUFFERING)
+                            || (player.getPlaybackState() == Player.STATE_IDLE);
+                    if (needsRebuild) {
+                        Log.d(TAG, "resume() on stalled/failed live stream, rebuilding player");
+                        cancelReconnect();
+                        reconnectAttempts = 0;
+                        isReconnecting = true;
+                        performReconnect(currentUrl);
+                        return;
+                    }
                 }
-            }
-            // For on-demand: if player is null, errored, or stalled, rebuild and seek to saved position
-            if (!isLiveStream && currentUrl != null) {
-                boolean needsRebuild = (player == null)
-                        || (player.getPlayerError() != null)
-                        || (player.getPlaybackState() == Player.STATE_BUFFERING && wasPlayingBeforeStall)
-                        || (player.getPlaybackState() == Player.STATE_IDLE);
-                if (needsRebuild) {
-                    Log.d(TAG, "resume() on stalled/failed on-demand, rebuilding at position " + savedPosition + "ms");
-                    performOnDemandResume();
-                    return;
+                // For on-demand: if player is null, errored, or stalled, rebuild and seek to saved position
+                if (!isLiveStream && currentUrl != null) {
+                    boolean needsRebuild = (player == null)
+                            || (player.getPlayerError() != null)
+                            || (player.getPlaybackState() == Player.STATE_BUFFERING && wasPlayingBeforeStall)
+                            || (player.getPlaybackState() == Player.STATE_IDLE);
+                    if (needsRebuild) {
+                        Log.d(TAG, "resume() on stalled/failed on-demand, rebuilding at position " + savedPosition + "ms");
+                        performOnDemandResume();
+                        return;
+                    }
                 }
-            }
-            if (player != null) {
-                Log.d("RemoteStreamerService", "resuming playback");
-                int focusResult = audioManager.requestAudioFocus(focusRequest);
-                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                    handler.post(() -> {
-                        if (player != null) {
-                            if (isLiveStream) {
-                                // if a live stream is paused and resumed, catch up to live
-                                player.seekToDefaultPosition();
-                            }
-                            player.play();
+                if (player != null) {
+                    Log.d("RemoteStreamerService", "resuming playback");
+                    int focusResult = audioManager.requestAudioFocus(focusRequest);
+                    if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                        if (isLiveStream) {
+                            // if a live stream is paused and resumed, catch up to live
+                            player.seekToDefaultPosition();
                         }
-                    });
-                    setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
-                    update();
-                    if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
+                        player.play();
+                        setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
+                        update();
+                        if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
+                    }
                 }
-            }
+            });
         }
 
         public void seekTo(Long position) {
             if (player != null) {
                 handler.post(() -> player.seekTo(position));
             }
+        }
+
+        public void seekBy(long offsetMs) {
+            if (player != null) {
+                handler.post(() -> {
+                    if (player != null) {
+                        long newPos = player.getCurrentPosition() + offsetMs;
+                        if (newPos < 0) newPos = 0;
+                        long duration = player.getDuration();
+                        if (duration > 0 && newPos > duration) newPos = duration;
+                        player.seekTo(newPos);
+                    }
+                });
+            }
+        }
+
+        public boolean isLiveStream() {
+            return isLiveStream;
         }
 
         public void stop() {
@@ -847,14 +870,11 @@ import android.net.NetworkRequest;
             reconnectAttempts = 0;
             isReconnecting = false;
             if (plugin != null) plugin.onPlayerEvent("stop", new JSObject().put("ended", ended));
+            setPlaybackState(PlaybackStateCompat.STATE_STOPPED);
+            setPosition(0);
+            update();
             releasePlayer();
-            // Do not destroy service here, keep it alive or let it be destroyed by unbind if needed?
-            // Original code destroyed service on stop. But we want it to persist?
-            // If stopped, maybe we can stop foreground?
             stopForeground(true);
-            // But we don't want to kill the service if the user just pressed stop but might play again?
-            // Actually, if they press stop, the notification goes away.
-            // So stopping foreground is correct.
         }
 
         public void releasePlayer() {
@@ -883,8 +903,8 @@ import android.net.NetworkRequest;
                                 long pos = player.getCurrentPosition();
                                 if (pos > 0) savedPosition = pos;
                             }
-                            // Start stall watchdog for both live and on-demand
-                            startStallWatchdog();
+                            // Start stall watchdog (but not if already reconnecting)
+                            if (!isReconnecting) startStallWatchdog();
                             break;
                         case Player.STATE_READY:
                             // Playback recovered — reset reconnect state
@@ -898,6 +918,7 @@ import android.net.NetworkRequest;
                         case Player.STATE_ENDED:
                             cancelStallWatchdog();
                             stopUpdatingTime();
+                            savedPosition = 0; // reset so next play starts from beginning
                             stop(true);
                             break;
                     }
@@ -958,12 +979,12 @@ import android.net.NetworkRequest;
         private void reconnect() {
             if (currentUrl == null || !isLiveStream) return;
             if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-                Log.w(TAG, "Max reconnect attempts (" + MAX_RECONNECT_ATTEMPTS + ") reached, giving up");
+                Log.w(TAG, "Max reconnect attempts (" + MAX_RECONNECT_ATTEMPTS + ") reached, pausing");
                 isReconnecting = false;
-                setPlaybackState(PlaybackStateCompat.STATE_ERROR);
+                // Use PAUSED instead of ERROR so handleNetworkRestored can still revive
+                setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
                 update();
-                if (plugin != null) plugin.onPlayerEvent("stop",
-                        new JSObject().put("ended", false).put("error", "Stream disconnected after " + MAX_RECONNECT_ATTEMPTS + " attempts"));
+                if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
                 return;
             }
 
@@ -1074,8 +1095,12 @@ import android.net.NetworkRequest;
             stallWatchdog = () -> {
                 if (player != null && player.getPlaybackState() == Player.STATE_BUFFERING) {
                     if (isLiveStream) {
-                        Log.d(TAG, "Stall watchdog fired after " + STALL_TIMEOUT_MS + "ms, forcing reconnect");
-                        reconnectAttempts = 0;
+                        // If already reconnecting, don't start another cycle
+                        if (isReconnecting) {
+                            Log.d(TAG, "Stall watchdog fired but already reconnecting, skipping");
+                            return;
+                        }
+                        Log.d(TAG, "Stall watchdog fired after " + STALL_TIMEOUT_MS + "ms, attempting reconnect");
                         reconnect();
                     } else {
                         // On-demand: just pause and wait for network
@@ -1142,9 +1167,17 @@ import android.net.NetworkRequest;
             updateTimeTask = new Runnable() {
                 @Override
                 public void run() {
-                    if (player != null && player.isPlaying()) {
+                    if (player == null || player.getPlaybackState() == Player.STATE_ENDED) {
+                        // Player gone or finished — stop updating
+                        return;
+                    }
+                    if (player.isPlaying()) {
                         long currentTime = player.getCurrentPosition();
                         long duration = player.getDuration();
+                        // Clamp position to duration to prevent showing time past end
+                        if (duration != C.TIME_UNSET && duration > 0 && currentTime > duration) {
+                            currentTime = duration;
+                        }
                         setDuration(duration);
                         setPosition(currentTime);
                         update();
@@ -1170,15 +1203,15 @@ import android.net.NetworkRequest;
 
         @Override
         public void onAudioFocusChange(int focusChange) {
-            if (player == null) {
-                return;
-            }
-
             handler.post(() -> {
+                if (player == null) {
+                    return;
+                }
                 switch (focusChange) {
                     case AudioManager.AUDIOFOCUS_GAIN:
                         player.setVolume(1.0f);
                         if (resumeOnFocusLossTransient) {
+                            resumeOnFocusLossTransient = false;
                             player.play();
                         }
                         break;
