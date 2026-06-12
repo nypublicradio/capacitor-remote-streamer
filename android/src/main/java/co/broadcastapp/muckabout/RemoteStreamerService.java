@@ -633,16 +633,16 @@ import android.net.NetworkRequest;
                             | PlaybackStateCompat.ACTION_PLAY_PAUSE
                             | PlaybackStateCompat.ACTION_STOP;
                     if (!isLiveStream) {
+                        // SKIP_TO_PREVIOUS/NEXT are what Android Auto renders as side buttons
+                        // They're wired to 10-second seeks in MediaSessionCallback
                         activePlaybackStateActions |= PlaybackStateCompat.ACTION_SEEK_TO
                                 | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
-                                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
-                                | PlaybackStateCompat.ACTION_REWIND
-                                | PlaybackStateCompat.ACTION_FAST_FORWARD;
+                                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
                     }
                 } else {
                     String[] nativeActions = isLiveStream
                             ? new String[]{"play", "pause", "stop"}
-                            : new String[]{"play", "pause", "seekto", "stop", "seekforward", "seekbackward", "previoustrack", "nexttrack"};
+                            : new String[]{"play", "pause", "seekto", "stop", "previoustrack", "nexttrack"};
                     for (String nativeAction : nativeActions) {
                         if (playbackStateActions.containsKey(nativeAction)) {
                             activePlaybackStateActions = activePlaybackStateActions | playbackStateActions.get(nativeAction);
@@ -659,6 +659,11 @@ import android.net.NetworkRequest;
                             continue;
                         }
                         if (actionName.equals("pause") && playbackState != PlaybackStateCompat.STATE_PLAYING) {
+                            continue;
+                        }
+                        // For Android Auto: skip all seek/skip actions for live streams
+                        if (isLiveStream && (actionName.equals("seekforward") || actionName.equals("seekbackward")
+                                || actionName.equals("previoustrack") || actionName.equals("nexttrack"))) {
                             continue;
                         }
 
