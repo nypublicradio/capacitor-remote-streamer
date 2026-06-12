@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Network
 
 class RemoteStreamer: NSObject {
     private var player: AVPlayer?
@@ -10,9 +11,18 @@ class RemoteStreamer: NSObject {
     private var playerTimeControlStatusObserver: NSKeyValueObservation?
     private var playerStatusObserver: NSKeyValueObservation?
     
+    // MARK: - Reconnection support
+    private var currentURL: String?
+    private var stallTimer: Timer?
+    private var reconnectAttempts = 0
+    private let maxReconnectAttempts = 5
+    private var pathMonitor: NWPathMonitor?
+    private var isReconnecting = false
+    
     override init() {
         super.init()
         setupInterruptionObserver()
+        setupNetworkMonitor()
     }
     
     func play(url: String, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -24,6 +34,10 @@ class RemoteStreamer: NSObject {
             completion(.failure(NSError(domain: "RemoteStreamer", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
             return
         }
+        
+        // Store URL for reconnection
+        currentURL = url.absoluteString
+        reconnectAttempts = 0
         
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         let playerItem = AVPlayerItem(asset: asset)
@@ -37,6 +51,7 @@ class RemoteStreamer: NSObject {
     }
     
     func pause() {
+        cancelStallTimer()
         player?.pause()
     }
     
@@ -45,9 +60,12 @@ class RemoteStreamer: NSObject {
     }
     
     func stop() {
+        cancelStallTimer()
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         removeObservers()
+        currentURL = nil
+        reconnectAttempts = 0
         NotificationCenter.default.post(name: Notification.Name("RemoteStreamerStop"), object: nil)
     }
     
@@ -66,6 +84,12 @@ class RemoteStreamer: NSObject {
         return player?.timeControlStatus == .playing
     }
     
+    func setVolume(volume: Double) {
+        player?.volume = Float(volume)
+    }
+    
+    // MARK: - Audio Session
+    
     private func setupAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
@@ -75,8 +99,110 @@ class RemoteStreamer: NSObject {
         }
     }
     
+    // MARK: - Network Monitoring
+    
+    private func setupNetworkMonitor() {
+        pathMonitor = NWPathMonitor()
+        pathMonitor?.pathUpdateHandler = { [weak self] path in
+            guard let self = self else { return }
+            
+            // Network became available and we're stalled - try reconnecting
+            if path.status == .satisfied {
+                DispatchQueue.main.async {
+                    if self.player?.timeControlStatus == .waitingToPlayAtSpecifiedRate && !self.isReconnecting {
+                        print("Network restored while buffering - attempting reconnect")
+                        self.reconnect()
+                    }
+                }
+            }
+        }
+        pathMonitor?.start(queue: DispatchQueue.global(qos: .utility))
+    }
+    
+    // MARK: - Stall Detection & Recovery
+    
+    private func startStallTimer() {
+        cancelStallTimer()
+        
+        // Exponential backoff: 5s, 10s, 20s, 40s, 60s max
+        let delay = min(5.0 * pow(2.0, Double(reconnectAttempts)), 60.0)
+        
+        stallTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            
+            if self.player?.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                print("Stall timer fired after \(delay)s - attempting reconnect")
+                self.reconnect()
+            }
+        }
+    }
+    
+    private func cancelStallTimer() {
+        stallTimer?.invalidate()
+        stallTimer = nil
+    }
+    
+    private func reconnect() {
+        guard let urlString = currentURL, !isReconnecting else {
+            print("Cannot reconnect: no URL stored or already reconnecting")
+            return
+        }
+        
+        guard reconnectAttempts < maxReconnectAttempts else {
+            print("Max reconnect attempts (\(maxReconnectAttempts)) reached - giving up")
+            stop()
+            NotificationCenter.default.post(
+                name: Notification.Name("RemoteStreamerError"),
+                object: nil,
+                userInfo: ["error": "Failed to reconnect after \(maxReconnectAttempts) attempts"]
+            )
+            return
+        }
+        
+        isReconnecting = true
+        reconnectAttempts += 1
+        print("Reconnect attempt \(reconnectAttempts) of \(maxReconnectAttempts)")
+        
+        // Clean teardown
+        cancelStallTimer()
+        player?.pause()
+        removeObservers()
+        player = nil
+        
+        // Small delay before reconnecting
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self else { return }
+            self.isReconnecting = false
+            
+            self.play(url: urlString) { result in
+                switch result {
+                case .success:
+                    print("Reconnect successful")
+                case .failure(let error):
+                    print("Reconnect failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    // MARK: - Observers
+    
     private func setupObservers(playerItem: AVPlayerItem) {
-        NotificationCenter.default.addObserver(self, selector: #selector(playerDidFinishPlaying), name: .AVPlayerItemDidPlayToEndTime, object: playerItem)
+        // End of playback
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(playerDidFinishPlaying),
+            name: .AVPlayerItemDidPlayToEndTime,
+            object: playerItem
+        )
+        
+        // Playback failed mid-stream
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(playerFailedToPlayToEnd),
+            name: .AVPlayerItemFailedToPlayToEndTime,
+            object: playerItem
+        )
         
         playbackBufferEmptyObserver = playerItem.observe(\.isPlaybackBufferEmpty, options: [.new, .initial]) { item, change in
             if change.newValue == true {
@@ -90,9 +216,12 @@ class RemoteStreamer: NSObject {
             }
         }
         
-        playbackLikelyToKeepUpObserver = playerItem.observe(\.isPlaybackLikelyToKeepUp, options: [.new, .initial]) { item, change in
+        playbackLikelyToKeepUpObserver = playerItem.observe(\.isPlaybackLikelyToKeepUp, options: [.new, .initial]) { [weak self] item, change in
             if item.status == .readyToPlay && change.newValue == true {
                 print("Playback is likely to keep up")
+                // Reset reconnect counter on successful playback
+                self?.reconnectAttempts = 0
+                self?.cancelStallTimer()
             }
         }
 
@@ -100,20 +229,29 @@ class RemoteStreamer: NSObject {
             guard let self = self else { return }
             switch player.timeControlStatus {
             case .paused:
+                self.cancelStallTimer()
                 NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPause"), object: nil)
             case .playing:
+                self.cancelStallTimer()
+                self.reconnectAttempts = 0  // Reset on successful playback
                 NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPlay"), object: nil)
             case .waitingToPlayAtSpecifiedRate:
                 NotificationCenter.default.post(name: Notification.Name("RemoteStreamerBuffering"), object: nil)
-                break
+                self.startStallTimer()  // Start watching for stall
             @unknown default:
                 break
             }
         }
 
-        playerStatusObserver = player?.observe(\.status, options: [.new, .initial]) { player, change in
+        playerStatusObserver = player?.observe(\.status, options: [.new, .initial]) { [weak self] player, change in
             if player.status == .failed {
-                NotificationCenter.default.post(name: Notification.Name("RemoteStreamerStop"), object: nil)
+                let errorMessage = player.error?.localizedDescription 
+                    ?? player.currentItem?.error?.localizedDescription 
+                    ?? "Unknown playback error"
+                print("Player failed: \(errorMessage)")
+                
+                // Attempt reconnect instead of just stopping
+                self?.reconnect()
             }
         }
         
@@ -122,6 +260,7 @@ class RemoteStreamer: NSObject {
     
     private func removeObservers() {
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: player?.currentItem)
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: player?.currentItem)
         playbackBufferEmptyObserver?.invalidate()
         playbackBufferFullObserver?.invalidate()
         playbackLikelyToKeepUpObserver?.invalidate()
@@ -148,15 +287,19 @@ class RemoteStreamer: NSObject {
         NotificationCenter.default.post(name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil, userInfo: ["currentTime": time])
     }
     
-    func setVolume(volume: Double) {
-        //player?.setVolume({volume})
-        player?.volume = Float(volume)
+    @objc private func playerDidFinishPlaying(note: NSNotification) {
+        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerEnded"), object: nil, userInfo: ["ended": true])
     }
     
-    @objc private func playerDidFinishPlaying(note: NSNotification) {
-        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerEnded"), object: nil, userInfo:
-            ["ended": true])
+    @objc private func playerFailedToPlayToEnd(note: NSNotification) {
+        if let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
+            print("Failed to play to end: \(error.localizedDescription)")
+        }
+        // Attempt reconnect
+        reconnect()
     }
+    
+    // MARK: - Interruption Handling
     
     private func setupInterruptionObserver() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption), name: AVAudioSession.interruptionNotification, object: nil)
@@ -184,7 +327,11 @@ class RemoteStreamer: NSObject {
         }
     }
     
+    // MARK: - Cleanup
+    
     deinit {
+        cancelStallTimer()
+        pathMonitor?.cancel()
         removeObservers()
         NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
     }
