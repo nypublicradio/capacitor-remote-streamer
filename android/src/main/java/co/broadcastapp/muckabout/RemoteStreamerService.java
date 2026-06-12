@@ -60,6 +60,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 
     public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
         private static final String TAG = "RemoteStreamerService";
@@ -102,6 +106,19 @@ import java.util.concurrent.Executors;
         private Runnable updateTimeTask;
         private boolean isLiveStream = false;
         private boolean resumeOnFocusLossTransient = false;
+
+        // Reconnection state
+        private String currentUrl;
+        private int reconnectAttempts = 0;
+        private static final int MAX_RECONNECT_ATTEMPTS = 3;
+        private static final long STALL_TIMEOUT_MS = 30000; // 30 seconds
+        private Runnable reconnectRunnable;
+        private Runnable stallWatchdog;
+        private boolean isReconnecting = false;
+        private boolean wasPlayingBeforeStall = false;
+        private long savedPosition = 0; // saved playback position for on-demand recovery
+        private ConnectivityManager connectivityManager;
+        private ConnectivityManager.NetworkCallback networkCallback;
 
         private RemoteStreamerPlugin plugin;
 
@@ -370,6 +387,7 @@ import java.util.concurrent.Executors;
             audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             executor = Executors.newSingleThreadExecutor();
             bffApiClient = new BffApiClient("https://wnyc.org");
+            setupNetworkCallback();
 
             // Initialize MediaSession immediately so Android Auto can connect
             // without waiting for the WebView plugin to bind.
@@ -514,6 +532,10 @@ import java.util.concurrent.Executors;
         }
 
         public void destroy() {
+            cancelReconnect();
+            if (networkCallback != null && connectivityManager != null) {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            }
             releasePlayer();
             if (executor != null) {
                 executor.shutdownNow();
@@ -700,6 +722,12 @@ import java.util.concurrent.Executors;
         public void play(String url) {
             if (url == null) return;
 
+            // Cancel any pending reconnect
+            cancelReconnect();
+            reconnectAttempts = 0;
+            isReconnecting = false;
+            currentUrl = url;
+
             handler.post(() -> {
                 // Release old player synchronously (we're already on the handler thread)
                 if (player != null) {
@@ -757,6 +785,33 @@ import java.util.concurrent.Executors;
         }
 
         public void resume() {
+            // For live streams: if player is null, errored, or stalled (buffering), rebuild from scratch
+            if (isLiveStream && currentUrl != null) {
+                boolean needsRebuild = (player == null)
+                        || (player.getPlayerError() != null)
+                        || (player.getPlaybackState() == Player.STATE_BUFFERING)
+                        || (player.getPlaybackState() == Player.STATE_IDLE);
+                if (needsRebuild) {
+                    Log.d(TAG, "resume() on stalled/failed live stream, rebuilding player");
+                    cancelReconnect();
+                    reconnectAttempts = 0;
+                    isReconnecting = true;
+                    performReconnect(currentUrl);
+                    return;
+                }
+            }
+            // For on-demand: if player is null, errored, or stalled, rebuild and seek to saved position
+            if (!isLiveStream && currentUrl != null) {
+                boolean needsRebuild = (player == null)
+                        || (player.getPlayerError() != null)
+                        || (player.getPlaybackState() == Player.STATE_BUFFERING && wasPlayingBeforeStall)
+                        || (player.getPlaybackState() == Player.STATE_IDLE);
+                if (needsRebuild) {
+                    Log.d(TAG, "resume() on stalled/failed on-demand, rebuilding at position " + savedPosition + "ms");
+                    performOnDemandResume();
+                    return;
+                }
+            }
             if (player != null) {
                 Log.d("RemoteStreamerService", "resuming playback");
                 int focusResult = audioManager.requestAudioFocus(focusRequest);
@@ -788,6 +843,9 @@ import java.util.concurrent.Executors;
         }
 
         public void stop(final boolean ended) {
+            cancelReconnect();
+            reconnectAttempts = 0;
+            isReconnecting = false;
             if (plugin != null) plugin.onPlayerEvent("stop", new JSObject().put("ended", ended));
             releasePlayer();
             // Do not destroy service here, keep it alive or let it be destroyed by unbind if needed?
@@ -820,12 +878,25 @@ import java.util.concurrent.Executors;
                     switch (state) {
                         case Player.STATE_BUFFERING:
                             if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", true));
+                            // Save position for on-demand recovery
+                            if (!isLiveStream && player != null) {
+                                long pos = player.getCurrentPosition();
+                                if (pos > 0) savedPosition = pos;
+                            }
+                            // Start stall watchdog for both live and on-demand
+                            startStallWatchdog();
                             break;
                         case Player.STATE_READY:
+                            // Playback recovered — reset reconnect state
+                            cancelStallWatchdog();
+                            reconnectAttempts = 0;
+                            isReconnecting = false;
+                            wasPlayingBeforeStall = false;
                             if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", false));
                             if (!isLiveStream) startUpdatingTime();
                             break;
                         case Player.STATE_ENDED:
+                            cancelStallWatchdog();
                             stopUpdatingTime();
                             stop(true);
                             break;
@@ -837,23 +908,233 @@ import java.util.concurrent.Executors;
                     if (isPlaying) {
                         if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
                     } else {
-                        if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
+                        if (!isReconnecting && plugin != null) {
+                            plugin.onPlayerEvent("pause", new JSObject());
+                        }
                     }
                 }
 
                 @Override
                 public void onPlayerError(PlaybackException error) {
-                    if (error.getCause().getClass().equals(java.net.ConnectException.class)) {
-                        pause();
-                    }
+                    Log.e(TAG, "Player error: " + error.getMessage() + " (code=" + error.errorCode + ")", error);
+
                     if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                        // Recoverable: just seek back to live edge
                         player.seekToDefaultPosition();
                         player.prepare();
                         player.play();
+                        return;
                     }
+
                     if (plugin != null) plugin.onPlayerEvent("error", new JSObject().put("message", error.getMessage()));
+
+                    // For live streams, attempt reconnection
+                    if (isLiveStream && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                        reconnect();
+                    } else if (!isLiveStream) {
+                        // On-demand: save position, pause state, wait for network/user action
+                        if (player != null) {
+                            long pos = player.getCurrentPosition();
+                            if (pos > 0) savedPosition = pos;
+                        }
+                        wasPlayingBeforeStall = true;
+                        isReconnecting = false;
+                        setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
+                        update();
+                        Log.d(TAG, "On-demand error: saved position=" + savedPosition + "ms, waiting for network");
+                    } else {
+                        // Live exhausted retries — stop
+                        isReconnecting = false;
+                        setPlaybackState(PlaybackStateCompat.STATE_ERROR);
+                        update();
+                        if (plugin != null) plugin.onPlayerEvent("stop", new JSObject().put("ended", false));
+                    }
                 }
             });
+        }
+
+        // --- Reconnection logic ---
+
+        private void reconnect() {
+            if (currentUrl == null || !isLiveStream) return;
+            if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                Log.w(TAG, "Max reconnect attempts (" + MAX_RECONNECT_ATTEMPTS + ") reached, giving up");
+                isReconnecting = false;
+                setPlaybackState(PlaybackStateCompat.STATE_ERROR);
+                update();
+                if (plugin != null) plugin.onPlayerEvent("stop",
+                        new JSObject().put("ended", false).put("error", "Stream disconnected after " + MAX_RECONNECT_ATTEMPTS + " attempts"));
+                return;
+            }
+
+            isReconnecting = true;
+            reconnectAttempts++;
+
+            // Exponential backoff: 2s, 4s, 8s
+            long delay = (long) (Math.pow(2, reconnectAttempts) * 1000);
+            Log.d(TAG, "Reconnect attempt " + reconnectAttempts + "/" + MAX_RECONNECT_ATTEMPTS + " in " + delay + "ms");
+
+            setPlaybackState(PlaybackStateCompat.STATE_BUFFERING);
+            update();
+            if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", true));
+
+            reconnectRunnable = () -> performReconnect(currentUrl);
+            handler.postDelayed(reconnectRunnable, delay);
+        }
+
+        private void performReconnect(String url) {
+            if (!isReconnecting) return;
+            Log.d(TAG, "Performing reconnect to: " + url);
+
+            handler.post(() -> {
+                // Release old player
+                if (player != null) {
+                    stopUpdatingTime();
+                    player.release();
+                    player = null;
+                }
+
+                player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
+
+                MediaSource mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
+                        .createMediaSource(MediaItem.fromUri(url));
+
+                player.setMediaSource(mediaSource);
+                player.prepare();
+                setupPlayerListeners();
+
+                int focusResult = audioManager.requestAudioFocus(focusRequest);
+                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    player.play();
+                }
+            });
+        }
+
+        private void performOnDemandResume() {
+            if (currentUrl == null) return;
+            handler.post(() -> {
+                Log.d(TAG, "performOnDemandResume: rebuilding at position " + savedPosition + "ms");
+                cancelReconnect();
+                cancelStallWatchdog();
+
+                if (player != null) {
+                    stopUpdatingTime();
+                    player.release();
+                    player = null;
+                }
+
+                player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
+
+                MediaSource mediaSource;
+                if (currentUrl.contains(".m3u8")) {
+                    mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
+                            .createMediaSource(MediaItem.fromUri(currentUrl));
+                } else {
+                    mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
+                            .createMediaSource(MediaItem.fromUri(currentUrl));
+                }
+
+                player.setMediaSource(mediaSource);
+                player.prepare();
+                setupPlayerListeners();
+
+                if (savedPosition > 0) {
+                    player.seekTo(savedPosition);
+                }
+
+                int focusResult = audioManager.requestAudioFocus(focusRequest);
+                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    player.play();
+                    setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
+                    update();
+                    if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
+                }
+
+                wasPlayingBeforeStall = false;
+                isReconnecting = false;
+            });
+        }
+
+        private void cancelReconnect() {
+            if (reconnectRunnable != null) {
+                handler.removeCallbacks(reconnectRunnable);
+                reconnectRunnable = null;
+            }
+            cancelStallWatchdog();
+        }
+
+        private void startStallWatchdog() {
+            cancelStallWatchdog();
+            wasPlayingBeforeStall = true;
+            // Save position for on-demand before we might lose it
+            if (!isLiveStream && player != null) {
+                long pos = player.getCurrentPosition();
+                if (pos > 0) savedPosition = pos;
+            }
+            stallWatchdog = () -> {
+                if (player != null && player.getPlaybackState() == Player.STATE_BUFFERING) {
+                    if (isLiveStream) {
+                        Log.d(TAG, "Stall watchdog fired after " + STALL_TIMEOUT_MS + "ms, forcing reconnect");
+                        reconnectAttempts = 0;
+                        reconnect();
+                    } else {
+                        // On-demand: just pause and wait for network
+                        Log.d(TAG, "Stall watchdog fired for on-demand, pausing at position " + savedPosition + "ms");
+                        setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
+                        update();
+                    }
+                }
+            };
+            handler.postDelayed(stallWatchdog, STALL_TIMEOUT_MS);
+        }
+
+        private void cancelStallWatchdog() {
+            if (stallWatchdog != null) {
+                handler.removeCallbacks(stallWatchdog);
+                stallWatchdog = null;
+            }
+        }
+
+        private void setupNetworkCallback() {
+            connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkRequest request = new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build();
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    // Network came back
+                    handler.post(() -> {
+                        if (currentUrl != null && wasPlayingBeforeStall) {
+                            if (isLiveStream) {
+                                Log.d(TAG, "Network restored, rebuilding live stream player");
+                                cancelReconnect();
+                                reconnectAttempts = 0;
+                                isReconnecting = true;
+                                performReconnect(currentUrl);
+                            } else {
+                                // On-demand: rebuild and seek to saved position
+                                Log.d(TAG, "Network restored, resuming on-demand at position " + savedPosition + "ms");
+                                performOnDemandResume();
+                            }
+                        }
+                    });
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    handler.post(() -> {
+                        if (player != null && player.isPlaying()) {
+                            wasPlayingBeforeStall = true;
+                            if (!isLiveStream) {
+                                long pos = player.getCurrentPosition();
+                                if (pos > 0) savedPosition = pos;
+                            }
+                        }
+                    });
+                }
+            };
+            connectivityManager.registerNetworkCallback(request, networkCallback);
         }
 
         private void startUpdatingTime() {

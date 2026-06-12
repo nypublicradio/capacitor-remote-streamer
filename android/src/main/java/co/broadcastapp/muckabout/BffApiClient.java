@@ -440,6 +440,7 @@ public class BffApiClient {
             connection.setConnectTimeout(TIMEOUT_MS);
             connection.setReadTimeout(TIMEOUT_MS);
             connection.setRequestProperty("Accept", "application/json");
+            connection.setInstanceFollowRedirects(true);
 
             int code = connection.getResponseCode();
             if (code != 200) {
