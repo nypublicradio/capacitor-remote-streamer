@@ -6,6 +6,7 @@ import com.getcapacitor.JSObject;
 
 public class MediaSessionCallback extends MediaSessionCompat.Callback {
     private static final String TAG = "MediaSessionCallback";
+    private static final long SEEK_INCREMENT_MS = 10000; // 10 seconds
 
     private final RemoteStreamerPlugin plugin;
     private final RemoteStreamerService service;
@@ -17,58 +18,78 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback {
 
     @Override
     public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
-        // Look up the stream URL from stored media items and start playback
         if (service != null) {
             String streamUrl = service.getStreamUrlForMediaId(mediaId);
             if (streamUrl != null) {
+                service.updateMetadataForMediaId(mediaId);
                 service.play(streamUrl);
             }
         }
-        // Also notify JS layer
-        JSObject data = new JSObject();
-        data.put("mediaId", mediaId);
-        plugin.onPlayerEvent("playFromMediaId", data);
+        // Also notify JS layer if plugin is connected
+        if (plugin != null) {
+            JSObject data = new JSObject();
+            data.put("mediaId", mediaId);
+            plugin.onPlayerEvent("playFromMediaId", data);
+        }
     }
 
     @Override
     public void onPlay() {
-        plugin.actionCallback("play");
+        if (plugin != null) plugin.actionCallback("play");
+        if (service != null) service.resume();
     }
 
     @Override
     public void onPause() {
-        plugin.actionCallback("pause");
+        if (plugin != null) plugin.actionCallback("pause");
+        if (service != null) service.pause();
     }
 
     @Override
     public void onSeekTo(long pos) {
-        JSObject data = new JSObject();
-        data.put("seekTime", pos);
-        plugin.actionCallback("seekto", data);
+        if (plugin != null) {
+            JSObject data = new JSObject();
+            data.put("seekTime", pos);
+            plugin.actionCallback("seekto", data);
+        }
+        if (service != null) service.seekTo(pos);
     }
 
     @Override
     public void onRewind() {
-        plugin.actionCallback("seekbackward");
+        if (plugin != null) plugin.actionCallback("seekbackward");
+        // Native seek for Android Auto
+        if (service != null) service.seekBy(-SEEK_INCREMENT_MS);
     }
 
     @Override
     public void onFastForward() {
-        plugin.actionCallback("seekforward");
+        if (plugin != null) plugin.actionCallback("seekforward");
+        // Native seek for Android Auto
+        if (service != null) service.seekBy(SEEK_INCREMENT_MS);
     }
 
     @Override
     public void onSkipToPrevious() {
-        plugin.actionCallback("previoustrack");
+        if (service != null && !service.isLiveStream()) {
+            // On-demand: seek backward 10 seconds
+            service.seekBy(-SEEK_INCREMENT_MS);
+        }
+        if (plugin != null) plugin.actionCallback("previoustrack");
     }
 
     @Override
     public void onSkipToNext() {
-        plugin.actionCallback("nexttrack");
+        if (service != null && !service.isLiveStream()) {
+            // On-demand: seek forward 10 seconds
+            service.seekBy(SEEK_INCREMENT_MS);
+        }
+        if (plugin != null) plugin.actionCallback("nexttrack");
     }
 
     @Override
     public void onStop() {
-        plugin.actionCallback("stop");
+        if (plugin != null) plugin.actionCallback("stop");
+        if (service != null) service.stop();
     }
 }
