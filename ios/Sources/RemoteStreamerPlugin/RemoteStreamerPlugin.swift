@@ -29,6 +29,11 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleCarPlayPlayRequest), name: Notification.Name("CarPlayPlayRequest"), object: nil)
         setupRemoteTransportControls()
+
+        // Initialize CarPlayMediaManager early so it can receive CarPlay connection notifications
+        if #available(iOS 14.0, *) {
+            _ = CarPlayMediaManager.shared
+        }
     }
 
     @objc func handlePlayEvent() {
@@ -76,25 +81,29 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let userInfo = notification.userInfo,
               let streamUrl = userInfo["streamUrl"] as? String else { return }
 
+        let isLive = userInfo["isLive"] as? Bool ?? streamUrl.contains(".m3u8")
+
         // Enable command center controls for CarPlay-initiated playback
-        enableRemoteTransportControls()
+        enableRemoteTransportControls(enableSeek: !isLive)
 
         implementation.play(url: streamUrl) { _ in }
 
-        // Update now playing info from stored media item data
+        // Update now playing info from CarPlay media manager metadata cache
+        let mediaId = userInfo["id"] as? String ?? ""
         if #available(iOS 14.0, *) {
-            if let items = CarPlayMediaManager.shared.mediaItems,
-               let itemId = userInfo["id"] as? String,
-               let matchingItem = items.first(where: { ($0["id"] as? String) == itemId }) {
-                let title = matchingItem["title"] as? String ?? ""
-                let artist = matchingItem["artist"] as? String ?? ""
-                let imageUrlString = matchingItem["imageUrl"] as? String ?? ""
-                updateNowPlayingInfo(title: title, artist: artist, album: "", duration: "0", imageURL: URL(string: imageUrlString), isLiveStream: true)
+            if let metadata = CarPlayMediaManager.shared.getMetadata(for: mediaId) {
+                updateNowPlayingInfo(
+                    title: metadata.title,
+                    artist: metadata.subtitle,
+                    album: "",
+                    duration: "0",
+                    imageURL: URL(string: metadata.imageUrl),
+                    isLiveStream: metadata.isLive
+                )
             }
         }
 
-        let itemId = userInfo["id"] as? String ?? ""
-        notifyListeners("playFromCarPlay", data: ["id": itemId])
+        notifyListeners("playFromCarPlay", data: ["id": mediaId, "isLive": isLive])
     }
 
     @objc func play(_ call: CAPPluginCall) {
