@@ -1,6 +1,7 @@
 import Foundation
 import Capacitor
 import MediaPlayer
+import CarPlay
 
 @objc(RemoteStreamerPlugin)
 public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -37,15 +38,28 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func handlePlayEvent() {
+        print("[RemoteStreamerPlugin] handlePlayEvent fired")
         notifyListeners("play", data: nil)
+        // Update playback rate so Now Playing shows correct play/pause state
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        print("[RemoteStreamerPlugin] nowPlayingInfo after play: title=\(info[MPMediaItemPropertyTitle] ?? "nil"), rate=1.0")
     }
 
     @objc func handlePauseEvent() {
+        print("[RemoteStreamerPlugin] handlePauseEvent fired")
         notifyListeners("pause", data: nil)
+        // Update playback rate so CarPlay/Now Playing shows correct play/pause state
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        print("[RemoteStreamerPlugin] nowPlayingInfo after pause: title=\(info[MPMediaItemPropertyTitle] ?? "nil"), rate=0.0")
     }
 
     @objc func handleStopEvent() {
             notifyListeners("stop", data: nil)
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     @objc func handleEndedEvent() {
@@ -59,10 +73,15 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func handleTimeUpdateEvent(notification: Notification) {
         if let userInfo = notification.userInfo, let currentTime = userInfo["currentTime"] as? Double {
             notifyListeners("timeUpdate", data: ["currentTime": currentTime])
-            MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+            // Update elapsed time and duration for the Now Playing timeline
+            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+            // Update duration from the player if available
+            if let duration = userInfo["duration"] as? Double, duration > 0 {
+                info[MPMediaItemPropertyPlaybackDuration] = duration
+            }
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }
-
-
     }
 
     @objc func setMediaItems(_ call: CAPPluginCall) {
@@ -86,24 +105,53 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         // Enable command center controls for CarPlay-initiated playback
         enableRemoteTransportControls(enableSeek: !isLive)
 
+        // Start playback — this activates the audio session
         implementation.play(url: streamUrl) { _ in }
 
-        // Update now playing info from CarPlay media manager metadata cache
+        // Set Now Playing info AFTER play() so the audio session is active
         let mediaId = userInfo["id"] as? String ?? ""
         if #available(iOS 14.0, *) {
             if let metadata = CarPlayMediaManager.shared.getMetadata(for: mediaId) {
-                updateNowPlayingInfo(
-                    title: metadata.title,
-                    artist: metadata.subtitle,
-                    album: "",
-                    duration: "0",
-                    imageURL: URL(string: metadata.imageUrl),
-                    isLiveStream: metadata.isLive
-                )
+                var nowPlayingInfo = [String: Any]()
+                nowPlayingInfo[MPMediaItemPropertyTitle] = metadata.title
+                nowPlayingInfo[MPMediaItemPropertyArtist] = metadata.subtitle
+                nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = metadata.isLive
+                nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+                nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
+                if !metadata.isLive && metadata.durationSeconds > 0 {
+                    nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = Double(metadata.durationSeconds)
+                    nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+                }
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+
+                // Load artwork asynchronously
+                if !metadata.imageUrl.isEmpty, let url = URL(string: metadata.imageUrl) {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
+                            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                            DispatchQueue.main.async {
+                                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                                info[MPMediaItemPropertyArtwork] = artwork
+                                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+                            }
+                        }
+                    }
+                }
             }
         }
 
+        // Notify JS about CarPlay-initiated playback
         notifyListeners("playFromCarPlay", data: ["id": mediaId, "isLive": isLive])
+
+        // Navigate to Now Playing screen (nowPlayingInfo is already set above)
+        if #available(iOS 14.0, *) {
+            if let controller = CarPlayMediaManager.shared.interfaceController {
+                let nowPlayingTemplate = CPNowPlayingTemplate.shared
+                if !(controller.topTemplate is CPNowPlayingTemplate) {
+                    controller.pushTemplate(nowPlayingTemplate, animated: true, completion: nil)
+                }
+            }
+        }
     }
 
     @objc func play(_ call: CAPPluginCall) {
@@ -184,16 +232,26 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         call.resolve()
     }
 
-    func updateNowPlayingInfo(title: String, artist: String, album: String, duration: String ,imageURL: URL?, isLiveStream: Bool) {
-        var nowPlayingInfo = [String: Any]()
+    func updateNowPlayingInfo(title: String, artist: String, album: String, duration: String, imageURL: URL?, isLiveStream: Bool) {
+        var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
         nowPlayingInfo[MPMediaItemPropertyTitle] = title
         nowPlayingInfo[MPMediaItemPropertyArtist] = artist
         nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
-        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
         nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = isLiveStream
-        
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+
+        // Set duration as a Double (required for the timeline to appear)
+        // NEVER set duration to 0 — that disables the interactive scrubber
+        if let durationValue = Double(duration), durationValue > 0 {
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = durationValue
+        }
+        // If duration is unknown, omit it — handleTimeUpdateEvent will fill it from the player
+
+        // Set now playing info immediately (without artwork) so controls appear
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+
+        // Load artwork asynchronously and update
         if let imageURL = imageURL {
-            // Load the image from the URL asynchronously
             DispatchQueue.global(qos: .userInitiated).async {
                 if let imageData = try? Data(contentsOf: imageURL),
                    let image = UIImage(data: imageData) {
@@ -201,14 +259,12 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
                         return image
                     }
                     DispatchQueue.main.async {
-                        nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
-                        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+                        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                        info[MPMediaItemPropertyArtwork] = artwork
+                        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
                     }
                 }
             }
-        } else {
-            // Update nowPlayingInfo without artwork
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
         }
     }
     
@@ -243,12 +299,20 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         // Play command
         commandCenter.playCommand.addTarget { event in
             self.implementation.resume()
+            // Update Now Playing rate to reflect playing state
+            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
             return .success
         }
         
         // Pause command
         commandCenter.pauseCommand.addTarget { event in
             self.implementation.pause()
+            // Update Now Playing rate to reflect paused state
+            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
             return .success
         }
 
@@ -256,8 +320,14 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         commandCenter.togglePlayPauseCommand.addTarget { event in
             if self.implementation.isPlaying() {
                 self.implementation.pause()
+                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
             } else {
                 self.implementation.resume()
+                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
             }
             return .success
         }
@@ -276,6 +346,10 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             let newTime = event.positionTime
             self.implementation.seekTo(position: newTime)
+            // Update elapsed time so the scrubber reflects the new position
+            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = newTime
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
             return .success
         }
     }

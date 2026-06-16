@@ -33,12 +33,19 @@ class RemoteStreamer: NSObject {
         setupNetworkMonitor()
     }
     
+    /// Flag to suppress the initial .paused KVO notification when creating a new player
+    private var suppressPauseNotification = false
+
     func play(url: String, completion: @escaping (Result<Void, Error>) -> Void) {
         // Cancel any pending reconnect
         cancelReconnect()
         reconnectAttempts = 0
         isReconnecting = false
         wasPlayingBeforeStall = false
+
+        // Remove old observers BEFORE replacing the player to prevent stale notifications
+        removeObservers()
+        suppressPauseNotification = true
 
         currentUrl = url
         isLiveStream = url.contains(".m3u8")
@@ -329,22 +336,31 @@ class RemoteStreamer: NSObject {
             }
         }
 
-        playerTimeControlStatusObserver = player?.observe(\.timeControlStatus, options: [.new, .initial]) { [weak self] player, change in
+        playerTimeControlStatusObserver = player?.observe(\.timeControlStatus, options: [.new]) { [weak self] player, change in
             guard let self = self else { return }
             switch player.timeControlStatus {
             case .paused:
-                if !self.isReconnecting {
-                    NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPause"), object: nil)
+                if self.suppressPauseNotification {
+                    self.suppressPauseNotification = false
+                } else if !self.isReconnecting {
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPause"), object: nil)
+                    }
                 }
             case .playing:
                 // Successful playback — reset reconnect state
+                self.suppressPauseNotification = false
                 self.cancelStallWatchdog()
                 self.reconnectAttempts = 0
                 self.isReconnecting = false
                 self.wasPlayingBeforeStall = false
-                NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPlay"), object: nil)
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPlay"), object: nil)
+                }
             case .waitingToPlayAtSpecifiedRate:
-                NotificationCenter.default.post(name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+                }
                 // Save position and start stall watchdog (but not if already reconnecting)
                 self.wasPlayingBeforeStall = true
                 if !self.isLiveStream, let currentTime = self.player?.currentTime() {
@@ -415,7 +431,12 @@ class RemoteStreamer: NSObject {
     }
     
     private func notifyTimeUpdate(time: Double) {
-        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil, userInfo: ["currentTime": time])
+        var userInfo: [String: Any] = ["currentTime": time]
+        // Include duration so Now Playing timeline can be set
+        if let duration = player?.currentItem?.duration, duration.isNumeric {
+            userInfo["duration"] = duration.seconds
+        }
+        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil, userInfo: userInfo)
     }
     
     func setVolume(volume: Double) {

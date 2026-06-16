@@ -15,13 +15,17 @@ public class CarPlayMediaManager {
 
     // Cache of mediaId -> stream URL for playback lookup
     private var browseUriCache: [String: String] = [:]
-    // Cache of mediaId -> metadata (title, subtitle, imageUrl, isLive)
-    private var browseMetadataCache: [String: (title: String, subtitle: String, imageUrl: String, isLive: Bool)] = [:]
+    // Cache of mediaId -> metadata (title, subtitle, imageUrl, isLive, durationSeconds)
+    private var browseMetadataCache: [String: (title: String, subtitle: String, imageUrl: String, isLive: Bool, durationSeconds: Int)] = [:]
 
-    // Image cache to avoid repeated downloads
+    // Image cache to avoid repeated downloads (accessed from multiple threads)
     private var imageCache: [String: UIImage] = [:]
+    private let imageCacheLock = NSLock()
 
     private let fetchQueue = DispatchQueue(label: "co.broadcastapp.carplay.fetch", qos: .userInitiated)
+
+    // Metadata waiting to be applied to Now Playing when playback actually starts
+    var pendingNowPlayingMetadata: (title: String, subtitle: String, imageUrl: String, isLive: Bool, durationSeconds: Int)?
 
     private init() {
         // Observe CarPlay connection notifications from the app-target scene delegate
@@ -108,7 +112,7 @@ public class CarPlayMediaManager {
     }
 
     /// Get cached metadata for a given mediaId
-    func getMetadata(for mediaId: String) -> (title: String, subtitle: String, imageUrl: String, isLive: Bool)? {
+    func getMetadata(for mediaId: String) -> (title: String, subtitle: String, imageUrl: String, isLive: Bool, durationSeconds: Int)? {
         return browseMetadataCache[mediaId]
     }
 
@@ -131,7 +135,7 @@ public class CarPlayMediaManager {
             let subtitle = stream.currentShowTitle.isEmpty ? "Live" : stream.currentShowTitle
 
             browseUriCache[mediaId] = stream.hlsUrl
-            browseMetadataCache[mediaId] = (title: stream.stationName, subtitle: subtitle, imageUrl: stream.imageUrl, isLive: true)
+            browseMetadataCache[mediaId] = (title: stream.stationName, subtitle: subtitle, imageUrl: stream.imageUrl, isLive: true, durationSeconds: 0)
 
             let item = CPListItem(text: stream.stationName, detailText: subtitle)
             item.accessoryType = .none
@@ -173,7 +177,7 @@ public class CarPlayMediaManager {
             }
 
             browseUriCache[mediaId] = newsItem.audioUrl
-            browseMetadataCache[mediaId] = (title: newsItem.title, subtitle: subtitle, imageUrl: newsItem.imageUrl, isLive: false)
+            browseMetadataCache[mediaId] = (title: newsItem.title, subtitle: subtitle, imageUrl: newsItem.imageUrl, isLive: false, durationSeconds: newsItem.durationSeconds)
 
             let item = CPListItem(text: newsItem.title, detailText: subtitle)
             item.accessoryType = .none
@@ -214,7 +218,7 @@ public class CarPlayMediaManager {
             }
 
             browseUriCache[mediaId] = story.audioUrl
-            browseMetadataCache[mediaId] = (title: story.title, subtitle: subtitle, imageUrl: story.imageUrl, isLive: false)
+            browseMetadataCache[mediaId] = (title: story.title, subtitle: subtitle, imageUrl: story.imageUrl, isLive: false, durationSeconds: story.durationSeconds)
 
             let item = CPListItem(text: story.title, detailText: subtitle)
             item.accessoryType = .none
@@ -297,7 +301,7 @@ public class CarPlayMediaManager {
                 }
 
                 self.browseUriCache[mediaId] = ep.audioUrl
-                self.browseMetadataCache[mediaId] = (title: ep.title, subtitle: subtitle, imageUrl: ep.imageUrl, isLive: false)
+                self.browseMetadataCache[mediaId] = (title: ep.title, subtitle: subtitle, imageUrl: ep.imageUrl, isLive: false, durationSeconds: ep.durationSeconds)
 
                 let item = CPListItem(text: ep.title, detailText: subtitle)
                 item.accessoryType = .none
@@ -345,12 +349,8 @@ public class CarPlayMediaManager {
             commandCenter.skipBackwardCommand.isEnabled = false
         }
 
-        // Update Now Playing info
-        if let metadata = metadata {
-            updateNowPlaying(title: metadata.title, subtitle: metadata.subtitle, imageUrl: metadata.imageUrl, isLive: isLive)
-        }
-
         // Notify the plugin to start playback
+        // (plugin will set nowPlayingInfo AFTER activating the audio session)
         NotificationCenter.default.post(
             name: Notification.Name("CarPlayPlayRequest"),
             object: nil,
@@ -362,17 +362,19 @@ public class CarPlayMediaManager {
         )
     }
 
-    private func updateNowPlaying(title: String, subtitle: String, imageUrl: String, isLive: Bool) {
-        var nowPlayingInfo = [String: Any]()
+    private func updateNowPlaying(title: String, subtitle: String, imageUrl: String, isLive: Bool, durationSeconds: Int = 0) {
+        var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
         nowPlayingInfo[MPMediaItemPropertyTitle] = title
         nowPlayingInfo[MPMediaItemPropertyArtist] = subtitle
         nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = isLive
-        if !isLive {
-            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = 0
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+        if !isLive && durationSeconds > 0 {
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = Double(durationSeconds)
+            nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 
-        // Load artwork asynchronously
+        // Load artwork asynchronously and update
         if !imageUrl.isEmpty, let url = URL(string: imageUrl) {
             DispatchQueue.global(qos: .userInitiated).async {
                 if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
@@ -402,19 +404,25 @@ public class CarPlayMediaManager {
             return
         }
 
-        // Check cache first
-        if let cached = imageCache[urlString] {
+        // Check cache first (thread-safe)
+        imageCacheLock.lock()
+        let cached = imageCache[urlString]
+        imageCacheLock.unlock()
+        if let cached = cached {
             DispatchQueue.main.async { completion(cached) }
             return
         }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
             guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else {
                 DispatchQueue.main.async { completion(nil) }
                 return
             }
-            // Cache it
-            self?.imageCache[urlString] = image
+            // Cache it (thread-safe)
+            self.imageCacheLock.lock()
+            self.imageCache[urlString] = image
+            self.imageCacheLock.unlock()
             DispatchQueue.main.async { completion(image) }
         }
     }
