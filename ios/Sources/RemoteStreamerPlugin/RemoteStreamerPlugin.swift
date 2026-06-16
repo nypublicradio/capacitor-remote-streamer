@@ -38,27 +38,24 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func handlePlayEvent() {
-        print("[RemoteStreamerPlugin] handlePlayEvent fired")
         notifyListeners("play", data: nil)
-        // Update playback rate so Now Playing shows correct play/pause state
+        MPNowPlayingInfoCenter.default().playbackState = .playing
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        print("[RemoteStreamerPlugin] nowPlayingInfo after play: title=\(info[MPMediaItemPropertyTitle] ?? "nil"), rate=1.0")
     }
 
     @objc func handlePauseEvent() {
-        print("[RemoteStreamerPlugin] handlePauseEvent fired")
         notifyListeners("pause", data: nil)
-        // Update playback rate so CarPlay/Now Playing shows correct play/pause state
+        MPNowPlayingInfoCenter.default().playbackState = .paused
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        print("[RemoteStreamerPlugin] nowPlayingInfo after pause: title=\(info[MPMediaItemPropertyTitle] ?? "nil"), rate=0.0")
     }
 
     @objc func handleStopEvent() {
             notifyListeners("stop", data: nil)
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
@@ -108,6 +105,9 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         // Start playback — this activates the audio session
         implementation.play(url: streamUrl) { _ in }
 
+        // Set playback state to playing immediately
+        MPNowPlayingInfoCenter.default().playbackState = .playing
+
         // Set Now Playing info AFTER play() so the audio session is active
         let mediaId = userInfo["id"] as? String ?? ""
         if #available(iOS 14.0, *) {
@@ -117,14 +117,14 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
                 nowPlayingInfo[MPMediaItemPropertyArtist] = metadata.subtitle
                 nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = metadata.isLive
                 nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+                nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
                 nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
                 if !metadata.isLive && metadata.durationSeconds > 0 {
                     nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = Double(metadata.durationSeconds)
-                    nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
                 }
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 
-                // Load artwork asynchronously
+                // Load artwork
                 if !metadata.imageUrl.isEmpty, let url = URL(string: metadata.imageUrl) {
                     DispatchQueue.global(qos: .userInitiated).async {
                         if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
@@ -299,7 +299,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         // Play command
         commandCenter.playCommand.addTarget { event in
             self.implementation.resume()
-            // Update Now Playing rate to reflect playing state
+            MPNowPlayingInfoCenter.default().playbackState = .playing
             var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
@@ -309,7 +309,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         // Pause command
         commandCenter.pauseCommand.addTarget { event in
             self.implementation.pause()
-            // Update Now Playing rate to reflect paused state
+            MPNowPlayingInfoCenter.default().playbackState = .paused
             var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
@@ -320,11 +320,13 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         commandCenter.togglePlayPauseCommand.addTarget { event in
             if self.implementation.isPlaying() {
                 self.implementation.pause()
+                MPNowPlayingInfoCenter.default().playbackState = .paused
                 var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
                 info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = info
             } else {
                 self.implementation.resume()
+                MPNowPlayingInfoCenter.default().playbackState = .playing
                 var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
                 info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = info
