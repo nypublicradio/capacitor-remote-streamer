@@ -7,6 +7,7 @@ class BffApiClient {
     static let shared = BffApiClient()
 
     private var baseUrl = "https://wnyc.org"
+    private var aviaryBaseUrl = "https://cms.nypr.digital/api/v2"
     private let session: URLSession
     private let timeoutInterval: TimeInterval = 10
 

@@ -26,6 +26,8 @@ import androidx.media.session.MediaButtonReceiver;
 import androidx.media.app.NotificationCompat.MediaStyle;
 
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -179,6 +181,9 @@ import android.net.NetworkRequest;
                     default:
                         if (parentMediaId.startsWith(SHOW_PREFIX)) {
                             String showSlug = parentMediaId.substring(SHOW_PREFIX.length());
+                            if (showSlug.endsWith("_alt")) {
+                                showSlug = showSlug.substring(0, showSlug.length() - 4);
+                            }
                             items = buildEpisodes(showSlug);
                         } else {
                             items = new ArrayList<>();
@@ -259,7 +264,31 @@ import android.net.NetworkRequest;
                         .setIconUri(resolveItemIconUri(show.imageUrl))
                         .build();
                 items.add(new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+
+                if (show.title != null && show.title.toLowerCase().startsWith("the ")) {
+                    String altTitle = show.title.substring(4) + ", " + show.title.substring(0, 3);
+                    Bundle altExtras = new Bundle();
+                    altExtras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+                    altExtras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+                    MediaDescriptionCompat altDesc = new MediaDescriptionCompat.Builder()
+                            .setMediaId(SHOW_PREFIX + show.slug + "_alt")
+                            .setTitle(altTitle)
+                            .setExtras(altExtras)
+                            .setIconUri(resolveItemIconUri(show.imageUrl))
+                            .build();
+                    items.add(new MediaBrowserCompat.MediaItem(altDesc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+                }
             }
+
+            Collections.sort(items, new Comparator<MediaBrowserCompat.MediaItem>() {
+                @Override
+                public int compare(MediaBrowserCompat.MediaItem a, MediaBrowserCompat.MediaItem b) {
+                    String titleA = a.getDescription().getTitle() != null ? a.getDescription().getTitle().toString() : "";
+                    String titleB = b.getDescription().getTitle() != null ? b.getDescription().getTitle().toString() : "";
+                    return titleA.compareToIgnoreCase(titleB);
+                }
+            });
+
             return items;
         }
 
@@ -388,7 +417,7 @@ import android.net.NetworkRequest;
             handler = new Handler(Looper.getMainLooper());
             audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             executor = Executors.newSingleThreadExecutor();
-            bffApiClient = new BffApiClient("https://wnyc.org");
+            bffApiClient = new BffApiClient();
             setupNetworkCallback();
 
             // Initialize MediaSession immediately so Android Auto can connect
