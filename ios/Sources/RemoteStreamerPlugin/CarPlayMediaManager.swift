@@ -3,7 +3,7 @@ import CarPlay
 import MediaPlayer
 
 @available(iOS 14.0, *)
-public class CarPlayMediaManager {
+public class CarPlayMediaManager: NSObject {
 
     public static let shared = CarPlayMediaManager()
 
@@ -30,7 +30,8 @@ public class CarPlayMediaManager {
     // All shows (including "The" alternates) for search filtering
     private var allShowsForSearch: [(title: String, slug: String, imageUrl: String)] = []
 
-    private init() {
+    private override init() {
+        super.init()
         // Observe CarPlay connection notifications from the app-target scene delegate
         NotificationCenter.default.addObserver(
             self,
@@ -624,6 +625,16 @@ extension CarPlayMediaManager: CPSearchTemplateDelegate {
 
     public func searchTemplateSearchButtonPressed(_ searchTemplate: CPSearchTemplate) {
         // No additional action needed — results are updated live as the user types
+    }
+
+    public func searchTemplate(_ searchTemplate: CPSearchTemplate, selectedResult item: CPListItem) async {
+        guard let info = item.userInfo as? [String: Any],
+              let slug = info["showSlug"] as? String,
+              let title = info["showTitle"] as? String else {
+            return
+        }
+
+        showEpisodes(for: slug, showTitle: title)
     }
 }
 
