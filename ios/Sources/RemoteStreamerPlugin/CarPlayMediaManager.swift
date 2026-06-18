@@ -27,6 +27,9 @@ public class CarPlayMediaManager {
     // Metadata waiting to be applied to Now Playing when playback actually starts
     var pendingNowPlayingMetadata: (title: String, subtitle: String, imageUrl: String, isLive: Bool, durationSeconds: Int)?
 
+    // All shows (including "The" alternates) for search filtering
+    private var allShowsForSearch: [(title: String, slug: String, imageUrl: String)] = []
+
     private init() {
         // Observe CarPlay connection notifications from the app-target scene delegate
         NotificationCenter.default.addObserver(
@@ -248,10 +251,39 @@ public class CarPlayMediaManager {
     }
 
     private func loadAllShows(into tabBar: CPTabBarTemplate, tabIndex: Int) {
-        let shows = BffApiClient.shared.fetchAllShows()
-        var listItems: [CPListItem] = []
+        let allShows = BffApiClient.shared.fetchAllShows()
+        let featuredShows = BffApiClient.shared.fetchFeaturedShows()
 
-        for show in shows {
+        // Build image lookup map from allShows (featured shows lack image URLs)
+        var showImageMap: [String: String] = [:]
+        for show in allShows {
+            showImageMap[show.slug] = show.imageUrl
+        }
+
+        // 1. Featured Shows items (at the top, unsorted)
+        var featuredItems: [CPListItem] = []
+        for show in featuredShows {
+            let imageUrl = showImageMap[show.slug] ?? show.imageUrl
+            let item = CPListItem(text: show.title, detailText: nil)
+            item.accessoryType = .disclosureIndicator
+            item.userInfo = ["showSlug": show.slug] as [String: Any]
+            item.handler = { [weak self] _, completion in
+                self?.showEpisodes(for: show.slug, showTitle: show.title)
+                completion()
+            }
+
+            loadImage(from: imageUrl) { image in
+                if let image = image {
+                    item.setImage(image)
+                }
+            }
+
+            featuredItems.append(item)
+        }
+
+        // 2. All Shows items with "The" prefix alternates
+        var allItems: [(title: String, item: CPListItem)] = []
+        for show in allShows {
             let item = CPListItem(text: show.title, detailText: nil)
             item.accessoryType = .disclosureIndicator
             item.userInfo = ["showSlug": show.slug] as [String: Any]
@@ -266,17 +298,84 @@ public class CarPlayMediaManager {
                 }
             }
 
-            listItems.append(item)
+            allItems.append((title: show.title, item: item))
+
+            // Duplicate shows starting with "The " under their alternate letter
+            if show.title.lowercased().hasPrefix("the ") {
+                let altTitle = String(show.title.dropFirst(4)) + ", " + String(show.title.prefix(3))
+                let altItem = CPListItem(text: altTitle, detailText: nil)
+                altItem.accessoryType = .disclosureIndicator
+                altItem.userInfo = ["showSlug": show.slug] as [String: Any]
+                altItem.handler = { [weak self] _, completion in
+                    self?.showEpisodes(for: show.slug, showTitle: show.title)
+                    completion()
+                }
+
+                loadImage(from: show.imageUrl) { image in
+                    if let image = image {
+                        altItem.setImage(image)
+                    }
+                }
+
+                allItems.append((title: altTitle, item: altItem))
+            }
         }
 
-        let section = CPListSection(items: listItems)
+        // Sort all shows alphabetically (case-insensitive)
+        allItems.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+
+        // Combine: featured first, then sorted all shows
+        let combinedItems = featuredItems + allItems.map { $0.item }
+
+        // Store all shows for search filtering (deduplicated by title)
+        var searchEntries: [(title: String, slug: String, imageUrl: String)] = []
+        var seenTitles = Set<String>()
+        // Add featured shows first
+        for show in featuredShows {
+            let imageUrl = showImageMap[show.slug] ?? show.imageUrl
+            if seenTitles.insert(show.title.lowercased()).inserted {
+                searchEntries.append((title: show.title, slug: show.slug, imageUrl: imageUrl))
+            }
+        }
+        // Add all shows (including "The" alternates)
+        for show in allShows {
+            if seenTitles.insert(show.title.lowercased()).inserted {
+                searchEntries.append((title: show.title, slug: show.slug, imageUrl: show.imageUrl))
+            }
+            if show.title.lowercased().hasPrefix("the ") {
+                let altTitle = String(show.title.dropFirst(4)) + ", " + String(show.title.prefix(3))
+                if seenTitles.insert(altTitle.lowercased()).inserted {
+                    searchEntries.append((title: altTitle, slug: show.slug, imageUrl: show.imageUrl))
+                }
+            }
+        }
+        self.allShowsForSearch = searchEntries
+
+        let section = CPListSection(items: combinedItems)
         DispatchQueue.main.async {
             let template = CPListTemplate(title: "Shows", sections: [section])
             if let image = UIImage(systemName: "music.mic") {
                 template.tabImage = image
             }
+
+            // Add search support via assistant bar button
+            let searchButton = CPBarButton(title: "Search") { [weak self] _ in
+                self?.showSearchTemplate()
+            }
+            template.trailingNavigationBarButtons = [searchButton]
+
             self.updateTab(tabBar, at: tabIndex, with: template)
         }
+    }
+
+    // MARK: - Search
+
+    private func showSearchTemplate() {
+        guard let controller = interfaceController else { return }
+
+        let searchTemplate = CPSearchTemplate()
+        searchTemplate.delegate = self
+        controller.pushTemplate(searchTemplate, animated: true, completion: nil)
     }
 
     // MARK: - Episodes (drill-down from a show)
@@ -471,6 +570,60 @@ public class CarPlayMediaManager {
 
         let section = CPListSection(items: listItems)
         return CPListTemplate(title: "Live", sections: [section])
+    }
+}
+
+// MARK: - CPSearchTemplateDelegate
+
+@available(iOS 14.0, *)
+extension CarPlayMediaManager: CPSearchTemplateDelegate {
+    public func searchTemplate(_ searchTemplate: CPSearchTemplate, updatedSearchText searchText: String, completionHandler: @escaping ([CPListItem]) -> Void) {
+        guard !searchText.isEmpty else {
+            completionHandler([])
+            return
+        }
+
+        let query = searchText.lowercased()
+        let filtered = allShowsForSearch.filter { $0.title.lowercased().contains(query) }
+
+        // Sort: prefix matches first, then contains matches
+        let sorted = filtered.sorted { a, b in
+            let aPrefix = a.title.lowercased().hasPrefix(query)
+            let bPrefix = b.title.lowercased().hasPrefix(query)
+            if aPrefix != bPrefix { return aPrefix }
+            return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+        }
+
+        var results: [CPListItem] = []
+        for show in sorted {
+            let item = CPListItem(text: show.title, detailText: nil)
+            item.accessoryType = .disclosureIndicator
+            item.userInfo = ["showSlug": show.slug, "showTitle": show.title] as [String: Any]
+            item.handler = { [weak self] listItem, completion in
+                guard let info = listItem.userInfo as? [String: Any],
+                      let slug = info["showSlug"] as? String,
+                      let title = info["showTitle"] as? String else {
+                    completion()
+                    return
+                }
+                self?.showEpisodes(for: slug, showTitle: title)
+                completion()
+            }
+
+            loadImage(from: show.imageUrl) { image in
+                if let image = image {
+                    item.setImage(image)
+                }
+            }
+
+            results.append(item)
+        }
+
+        completionHandler(results)
+    }
+
+    public func searchTemplateSearchButtonPressed(_ searchTemplate: CPSearchTemplate) {
+        // No additional action needed — results are updated live as the user types
     }
 }
 

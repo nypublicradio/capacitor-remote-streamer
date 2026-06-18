@@ -7,7 +7,6 @@ class BffApiClient {
     static let shared = BffApiClient()
 
     private var baseUrl = "https://wnyc.org"
-    private var aviaryBaseUrl = "https://cms.nypr.digital/api/v2"
     private let session: URLSession
     private let timeoutInterval: TimeInterval = 10
 
@@ -186,6 +185,33 @@ class BffApiClient {
 
             if !title.isEmpty {
                 shows.append(Show(slug: slug, title: title, imageUrl: imageUrl))
+            }
+        }
+        return shows
+    }
+
+    /// Fetch featured shows from /api/navigation -> data.showsResponse.featuredShowsInMenu
+    func fetchFeaturedShows() -> [Show] {
+        guard let json = httpGetSync(baseUrl + "/api/navigation"),
+              let obj = try? JSONSerialization.jsonObject(with: json) as? [String: Any] else {
+            return []
+        }
+
+        guard let data = obj["data"] as? [String: Any],
+              let showsResponse = data["showsResponse"] as? [String: Any],
+              let featuredShows = showsResponse["featuredShowsInMenu"] as? [[String: Any]] else {
+            return []
+        }
+
+        var shows: [Show] = []
+        for showObj in featuredShows {
+            let slug = showObj["slug"] as? String ?? showObj["id"] as? String ?? ""
+            let title = showObj["title"] as? String ?? ""
+
+            // The API doesn't provide image URLs here, so we'll match it with fetchAllShows
+            // later in the CarPlay manager to populate the image.
+            if !title.isEmpty {
+                shows.append(Show(slug: slug, title: title, imageUrl: ""))
             }
         }
         return shows
