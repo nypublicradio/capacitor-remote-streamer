@@ -23,14 +23,9 @@ public class BffApiClient {
     private static final int TIMEOUT_MS = 10000;
 
     private String baseUrl = "https://wnyc.org";
-    private String aviaryBaseUrl = "https://cms.nypr.digital/api/v2";
 
     public void setBaseUrl(String baseUrl) {
         this.baseUrl = baseUrl;
-    }
-
-    public void setAviaryBaseUrl(String aviaryBaseUrl) {
-        this.aviaryBaseUrl = aviaryBaseUrl;
     }
 
     // --- Data classes ---
@@ -241,35 +236,26 @@ public class BffApiClient {
     public List<Show> fetchFeaturedShows() {
         List<Show> shows = new ArrayList<>();
         try {
-            String json = httpGet(aviaryBaseUrl + "/curated_lists/90"); // /20 = demo
+            String json = httpGet(baseUrl + "/api/navigation");
             if (json == null) return shows;
 
             JSONObject obj = new JSONObject(json);
-            // just interested in the featured shows for now, which is what Android Auto will show
-            JSONArray featuredShows = obj.optJSONArray("list_items");
+            JSONObject data = obj.optJSONObject("data");
+            if (data == null) return shows;
+            JSONObject showsResponse = data.optJSONObject("showsResponse");
+            if (showsResponse == null) return shows;
+            JSONArray featuredShows = showsResponse.optJSONArray("featuredShowsInMenu");
             if (featuredShows == null) return shows;
 
             for (int i = 0; i < featuredShows.length(); i++) {
                 JSONObject showObj = featuredShows.getJSONObject(i);
                 String slug = showObj.optString("slug", showObj.optString("id", ""));
-                // Primary shape is top-level fields (title, image, showArt), with legacy attrs fallback.
                 String title = showObj.optString("title", "");
-                String imageUrl = resolveImageUrl(showObj, false, "image", "showArt", "logoImage", "logo_image");
-
-                if (title.isEmpty() || imageUrl.isEmpty()) {
-                    JSONObject attrs = showObj.optJSONObject("attributes");
-                    if (attrs != null) {
-                        if (title.isEmpty()) {
-                            title = attrs.optString("title", "");
-                        }
-                        if (imageUrl.isEmpty()) {
-                            imageUrl = resolveImageUrl(attrs, false, "image", "image-main", "imageMain");
-                        }
-                    }
-                }
-
+                
+                // The API doesn't provide image URLs here, so we'll match it with fetchAllShows
+                // later in the service to populate the image.
                 if (!title.isEmpty()) {
-                    shows.add(new Show(slug, title, imageUrl));
+                    shows.add(new Show(slug, title, ""));
                 }
             }
         } catch (JSONException e) {

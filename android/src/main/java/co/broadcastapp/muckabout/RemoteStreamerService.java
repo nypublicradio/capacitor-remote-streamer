@@ -199,14 +199,14 @@ import android.net.NetworkRequest;
             root.add(makeBrowsableItem(CATEGORY_LIVE, "Live Radio", "Listen to WNYC live streams"));
             root.add(makeBrowsableItem(CATEGORY_NEWS, "News", "NYC Headlines & NPR News Now"));
             root.add(makeBrowsableItem(CATEGORY_TOP_STORIES, "Top Stories", "Curated stories from WNYC"));
-            // All Shows uses grid layout for the show tiles
+            // Shows menu is a list of subcategories
             Bundle showsExtras = new Bundle();
-            showsExtras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_GRID_ITEM);
+            showsExtras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
             showsExtras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
             MediaDescriptionCompat showsDesc = new MediaDescriptionCompat.Builder()
                     .setMediaId(CATEGORY_SHOWS)
                     .setTitle("Shows")
-                    .setSubtitle("Browse all WNYC shows")
+                    .setSubtitle("Browse WNYC shows")
                     .setExtras(showsExtras)
                     .build();
             root.add(new MediaBrowserCompat.MediaItem(showsDesc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
@@ -251,9 +251,37 @@ import android.net.NetworkRequest;
 
         private List<MediaBrowserCompat.MediaItem> buildAllShows() {
             List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
-            List<BffApiClient.Show> shows = bffApiClient.fetchAllShows();
-            for (BffApiClient.Show show : shows) {
-                // Each show's children (episodes) should render as a single-column list
+            List<BffApiClient.Show> allShows = bffApiClient.fetchAllShows();
+            
+            // Map for quick image lookup
+            Map<String, String> showImageMap = new HashMap<>();
+            for (BffApiClient.Show show : allShows) {
+                showImageMap.put(show.slug, show.imageUrl);
+            }
+
+
+            // 2. Featured Shows items
+            List<BffApiClient.Show> featuredShows = bffApiClient.fetchFeaturedShows();
+            for (BffApiClient.Show show : featuredShows) {
+                String imageUrl = showImageMap.get(show.slug);
+                if (imageUrl == null) imageUrl = show.imageUrl;
+
+                Bundle extras = new Bundle();
+                extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+                extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
+                MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
+                        .setMediaId(SHOW_PREFIX + show.slug)
+                        .setTitle(show.title)
+                        .setExtras(extras)
+                        .setIconUri(resolveItemIconUri(imageUrl))
+                        .build();
+                items.add(new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+            }
+
+
+            // 4. All Shows items (sorted)
+            List<MediaBrowserCompat.MediaItem> allItems = new ArrayList<>();
+            for (BffApiClient.Show show : allShows) {
                 Bundle extras = new Bundle();
                 extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
                 extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
@@ -263,7 +291,7 @@ import android.net.NetworkRequest;
                         .setExtras(extras)
                         .setIconUri(resolveItemIconUri(show.imageUrl))
                         .build();
-                items.add(new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+                allItems.add(new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
 
                 if (show.title != null && show.title.toLowerCase().startsWith("the ")) {
                     String altTitle = show.title.substring(4) + ", " + show.title.substring(0, 3);
@@ -276,18 +304,20 @@ import android.net.NetworkRequest;
                             .setExtras(altExtras)
                             .setIconUri(resolveItemIconUri(show.imageUrl))
                             .build();
-                    items.add(new MediaBrowserCompat.MediaItem(altDesc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+                    allItems.add(new MediaBrowserCompat.MediaItem(altDesc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
                 }
             }
 
-            Collections.sort(items, new Comparator<MediaBrowserCompat.MediaItem>() {
+            Collections.sort(allItems, new Comparator<MediaBrowserCompat.MediaItem>() {
                 @Override
-                public int compare(MediaBrowserCompat.MediaItem a, MediaBrowserCompat.MediaItem b) {
-                    String titleA = a.getDescription().getTitle() != null ? a.getDescription().getTitle().toString() : "";
-                    String titleB = b.getDescription().getTitle() != null ? b.getDescription().getTitle().toString() : "";
-                    return titleA.compareToIgnoreCase(titleB);
+                public int compare(MediaBrowserCompat.MediaItem o1, MediaBrowserCompat.MediaItem o2) {
+                    String title1 = o1.getDescription().getTitle() != null ? o1.getDescription().getTitle().toString() : "";
+                    String title2 = o2.getDescription().getTitle() != null ? o2.getDescription().getTitle().toString() : "";
+                    return title1.compareToIgnoreCase(title2);
                 }
             });
+
+            items.addAll(allItems);
 
             return items;
         }
