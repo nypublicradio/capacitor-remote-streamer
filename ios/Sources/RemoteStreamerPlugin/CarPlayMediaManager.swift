@@ -84,9 +84,9 @@ public class CarPlayMediaManager {
 
         // Create tab templates — start with loading placeholders, then populate async
         let liveTab = buildLoadingTemplate(title: "Live Radio", systemImageName: "antenna.radiowaves.left.and.right")
-        let newsTab = buildLoadingTemplate(title: "Latest News", systemImageName: "newspaper")
+        let newsTab = buildLoadingTemplate(title: "News", systemImageName: "newspaper")
         let storiesTab = buildLoadingTemplate(title: "Top Stories", systemImageName: "star")
-        let showsTab = buildLoadingTemplate(title: "All Shows", systemImageName: "music.mic")
+        let showsTab = buildLoadingTemplate(title: "Shows", systemImageName: "music.mic")
 
         let tabBar = CPTabBarTemplate(templates: [liveTab, newsTab, storiesTab, showsTab])
         controller.setRootTemplate(tabBar, animated: true, completion: nil)
@@ -177,7 +177,7 @@ public class CarPlayMediaManager {
             }
 
             browseUriCache[mediaId] = newsItem.audioUrl
-            browseMetadataCache[mediaId] = (title: newsItem.title, subtitle: subtitle, imageUrl: newsItem.imageUrl, isLive: false, durationSeconds: newsItem.durationSeconds)
+            browseMetadataCache[mediaId] = (title: newsItem.title, subtitle: newsItem.showTitle, imageUrl: newsItem.imageUrl, isLive: false, durationSeconds: newsItem.durationSeconds)
 
             let item = CPListItem(text: newsItem.title, detailText: subtitle)
             item.accessoryType = .none
@@ -198,7 +198,7 @@ public class CarPlayMediaManager {
 
         let section = CPListSection(items: listItems)
         DispatchQueue.main.async {
-            let template = CPListTemplate(title: "Latest News", sections: [section])
+            let template = CPListTemplate(title: "News", sections: [section])
             if let image = UIImage(systemName: "newspaper") {
                 template.tabImage = image
             }
@@ -218,7 +218,7 @@ public class CarPlayMediaManager {
             }
 
             browseUriCache[mediaId] = story.audioUrl
-            browseMetadataCache[mediaId] = (title: story.title, subtitle: subtitle, imageUrl: story.imageUrl, isLive: false, durationSeconds: story.durationSeconds)
+            browseMetadataCache[mediaId] = (title: story.title, subtitle: story.showTitle, imageUrl: story.imageUrl, isLive: false, durationSeconds: story.durationSeconds)
 
             let item = CPListItem(text: story.title, detailText: subtitle)
             item.accessoryType = .none
@@ -271,7 +271,7 @@ public class CarPlayMediaManager {
 
         let section = CPListSection(items: listItems)
         DispatchQueue.main.async {
-            let template = CPListTemplate(title: "All Shows", sections: [section])
+            let template = CPListTemplate(title: "Shows", sections: [section])
             if let image = UIImage(systemName: "music.mic") {
                 template.tabImage = image
             }
@@ -301,7 +301,7 @@ public class CarPlayMediaManager {
                 }
 
                 self.browseUriCache[mediaId] = ep.audioUrl
-                self.browseMetadataCache[mediaId] = (title: ep.title, subtitle: subtitle, imageUrl: ep.imageUrl, isLive: false, durationSeconds: ep.durationSeconds)
+                self.browseMetadataCache[mediaId] = (title: ep.title, subtitle: ep.showTitle, imageUrl: ep.imageUrl, isLive: false, durationSeconds: ep.durationSeconds)
 
                 let item = CPListItem(text: ep.title, detailText: subtitle)
                 item.accessoryType = .none

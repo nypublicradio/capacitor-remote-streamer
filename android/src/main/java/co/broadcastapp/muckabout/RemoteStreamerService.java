@@ -192,7 +192,7 @@ import android.net.NetworkRequest;
         private List<MediaBrowserCompat.MediaItem> buildRootMenu() {
             List<MediaBrowserCompat.MediaItem> root = new ArrayList<>();
             root.add(makeBrowsableItem(CATEGORY_LIVE, "Live Radio", "Listen to WNYC live streams"));
-            root.add(makeBrowsableItem(CATEGORY_NEWS, "Latest News", "NYC Headlines & NPR News Now"));
+            root.add(makeBrowsableItem(CATEGORY_NEWS, "News", "NYC Headlines & NPR News Now"));
             root.add(makeBrowsableItem(CATEGORY_TOP_STORIES, "Top Stories", "Curated stories from WNYC"));
             // All Shows uses grid layout for the show tiles
             Bundle showsExtras = new Bundle();
@@ -200,7 +200,7 @@ import android.net.NetworkRequest;
             showsExtras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
             MediaDescriptionCompat showsDesc = new MediaDescriptionCompat.Builder()
                     .setMediaId(CATEGORY_SHOWS)
-                    .setTitle("All Shows")
+                    .setTitle("Shows")
                     .setSubtitle("Browse all WNYC shows")
                     .setExtras(showsExtras)
                     .build();
@@ -349,9 +349,11 @@ import android.net.NetworkRequest;
             if (streamUrl != null && !streamUrl.isEmpty()) {
                 browseUriCache.put(mediaId, streamUrl);
             }
+            // Strip duration from subtitle for the player view (e.g. "Show Name | 41 min" → "Show Name")
+            String playerSubtitle = subtitle != null ? subtitle.replaceAll("\\s*\\|\\s*\\d+\\s*min$", "") : "";
             browseMetadataCache.put(mediaId, new String[]{
                 title != null ? title : "",
-                subtitle != null ? subtitle : "",
+                playerSubtitle,
                 imageUrl != null ? imageUrl : ""
             });
             Bundle extras = makeListContentStyleExtras();
@@ -633,16 +635,15 @@ import android.net.NetworkRequest;
                             | PlaybackStateCompat.ACTION_PLAY_PAUSE
                             | PlaybackStateCompat.ACTION_STOP;
                     if (!isLiveStream) {
-                        // SKIP_TO_PREVIOUS/NEXT are what Android Auto renders as side buttons
-                        // They're wired to 10-second seeks in MediaSessionCallback
+                        // REWIND/FAST_FORWARD renders circular seek arrows (↺ ↻) on real head units
                         activePlaybackStateActions |= PlaybackStateCompat.ACTION_SEEK_TO
-                                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
-                                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
+                                | PlaybackStateCompat.ACTION_REWIND
+                                | PlaybackStateCompat.ACTION_FAST_FORWARD;
                     }
                 } else {
                     String[] nativeActions = isLiveStream
                             ? new String[]{"play", "pause", "stop"}
-                            : new String[]{"play", "pause", "seekto", "stop", "previoustrack", "nexttrack"};
+                            : new String[]{"play", "pause", "seekto", "stop", "seekforward", "seekbackward"};
                     for (String nativeAction : nativeActions) {
                         if (playbackStateActions.containsKey(nativeAction)) {
                             activePlaybackStateActions = activePlaybackStateActions | playbackStateActions.get(nativeAction);
@@ -662,8 +663,12 @@ import android.net.NetworkRequest;
                             continue;
                         }
                         // For Android Auto: skip all seek/skip actions for live streams
+                        // For on-demand: skip previoustrack/nexttrack (use REWIND/FF for circular seek icons)
                         if (isLiveStream && (actionName.equals("seekforward") || actionName.equals("seekbackward")
                                 || actionName.equals("previoustrack") || actionName.equals("nexttrack"))) {
+                            continue;
+                        }
+                        if (!isLiveStream && (actionName.equals("previoustrack") || actionName.equals("nexttrack"))) {
                             continue;
                         }
 
