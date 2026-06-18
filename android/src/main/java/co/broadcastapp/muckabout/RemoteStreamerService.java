@@ -635,15 +635,14 @@ import android.net.NetworkRequest;
                             | PlaybackStateCompat.ACTION_PLAY_PAUSE
                             | PlaybackStateCompat.ACTION_STOP;
                     if (!isLiveStream) {
-                        // REWIND/FAST_FORWARD renders circular seek arrows (↺ ↻) on real head units
                         activePlaybackStateActions |= PlaybackStateCompat.ACTION_SEEK_TO
-                                | PlaybackStateCompat.ACTION_REWIND
-                                | PlaybackStateCompat.ACTION_FAST_FORWARD;
+                                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+                                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
                     }
                 } else {
                     String[] nativeActions = isLiveStream
                             ? new String[]{"play", "pause", "stop"}
-                            : new String[]{"play", "pause", "seekto", "stop", "seekforward", "seekbackward"};
+                            : new String[]{"play", "pause", "seekto", "stop", "previoustrack", "nexttrack"};
                     for (String nativeAction : nativeActions) {
                         if (playbackStateActions.containsKey(nativeAction)) {
                             activePlaybackStateActions = activePlaybackStateActions | playbackStateActions.get(nativeAction);
@@ -663,12 +662,8 @@ import android.net.NetworkRequest;
                             continue;
                         }
                         // For Android Auto: skip all seek/skip actions for live streams
-                        // For on-demand: skip previoustrack/nexttrack (use REWIND/FF for circular seek icons)
                         if (isLiveStream && (actionName.equals("seekforward") || actionName.equals("seekbackward")
                                 || actionName.equals("previoustrack") || actionName.equals("nexttrack"))) {
-                            continue;
-                        }
-                        if (!isLiveStream && (actionName.equals("previoustrack") || actionName.equals("nexttrack"))) {
                             continue;
                         }
 
