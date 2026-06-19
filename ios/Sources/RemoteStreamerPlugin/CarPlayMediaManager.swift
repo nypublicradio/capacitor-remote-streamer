@@ -66,6 +66,8 @@ public class CarPlayMediaManager: NSObject {
 
     @objc private func handleCarPlayDidConnect(_ notification: Notification) {
         guard let controller = notification.object as? CPInterfaceController else { return }
+        // Skip if the scene delegate already set us up (avoids double API fetches)
+        guard self.interfaceController !== controller else { return }
         self.interfaceController = controller
         setupRootTemplate()
     }
