@@ -1,7 +1,6 @@
 import Foundation
 import Capacitor
 import MediaPlayer
-import CarPlay
 
 @objc(RemoteStreamerPlugin)
 public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -19,7 +18,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setMediaItems", returnType: CAPPluginReturnPromise)
     ]
     
-    private let implementation = RemoteStreamer()
+    private var implementation: RemoteStreamer { RemoteStreamer.shared }
 
     override public func load() {
         NotificationCenter.default.addObserver(self, selector: #selector(handlePlayEvent), name: Notification.Name("RemoteStreamerPlay"), object: nil)
@@ -29,7 +28,6 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleCarPlayPlayRequest), name: Notification.Name("CarPlayPlayRequest"), object: nil)
-        setupRemoteTransportControls()
 
         // Initialize CarPlayMediaManager early so it can receive CarPlay connection notifications
         if #available(iOS 14.0, *) {
@@ -94,64 +92,14 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func handleCarPlayPlayRequest(notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let streamUrl = userInfo["streamUrl"] as? String else { return }
+        guard let userInfo = notification.userInfo else { return }
 
-        let isLive = userInfo["isLive"] as? Bool ?? streamUrl.contains(".m3u8")
-
-        // Enable command center controls for CarPlay-initiated playback
-        enableRemoteTransportControls(enableSeek: !isLive)
-
-        // Start playback — this activates the audio session
-        implementation.play(url: streamUrl) { _ in }
-
-        // Set playback state to playing immediately
-        MPNowPlayingInfoCenter.default().playbackState = .playing
-
-        // Set Now Playing info AFTER play() so the audio session is active
+        // CarPlayMediaManager already started playback and set Now Playing info.
+        // This handler only needs to notify the JS layer so the app UI can update.
         let mediaId = userInfo["id"] as? String ?? ""
-        if #available(iOS 14.0, *) {
-            if let metadata = CarPlayMediaManager.shared.getMetadata(for: mediaId) {
-                var nowPlayingInfo = [String: Any]()
-                nowPlayingInfo[MPMediaItemPropertyTitle] = metadata.title
-                nowPlayingInfo[MPMediaItemPropertyArtist] = metadata.subtitle
-                nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = metadata.isLive
-                nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
-                nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
-                nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
-                if !metadata.isLive && metadata.durationSeconds > 0 {
-                    nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = Double(metadata.durationSeconds)
-                }
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+        let isLive = userInfo["isLive"] as? Bool ?? false
 
-                // Load artwork
-                if !metadata.imageUrl.isEmpty, let url = URL(string: metadata.imageUrl) {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
-                            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-                            DispatchQueue.main.async {
-                                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-                                info[MPMediaItemPropertyArtwork] = artwork
-                                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Notify JS about CarPlay-initiated playback
         notifyListeners("playFromCarPlay", data: ["id": mediaId, "isLive": isLive])
-
-        // Navigate to Now Playing screen (nowPlayingInfo is already set above)
-        if #available(iOS 14.0, *) {
-            if let controller = CarPlayMediaManager.shared.interfaceController {
-                let nowPlayingTemplate = CPNowPlayingTemplate.shared
-                if !(controller.topTemplate is CPNowPlayingTemplate) {
-                    controller.pushTemplate(nowPlayingTemplate, animated: true, completion: nil)
-                }
-            }
-        }
     }
 
     @objc func play(_ call: CAPPluginCall) {
@@ -269,91 +217,11 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     
     func disableRemoteTransportControls() {
-        let commandCenter = MPRemoteCommandCenter.shared()
-        commandCenter.playCommand.isEnabled = false
-        commandCenter.pauseCommand.isEnabled = false
-        commandCenter.togglePlayPauseCommand.isEnabled = false
-        commandCenter.changePlaybackPositionCommand.isEnabled = false
-        commandCenter.skipForwardCommand.isEnabled = false
-        commandCenter.skipBackwardCommand.isEnabled = false
+        implementation.disableCommandCenter()
     }
 
     func enableRemoteTransportControls(enableSeek: Bool = false) {
-        let commandCenter = MPRemoteCommandCenter.shared()
-        commandCenter.playCommand.isEnabled = true
-        commandCenter.pauseCommand.isEnabled = true
-        commandCenter.togglePlayPauseCommand.isEnabled = true
-        commandCenter.changePlaybackPositionCommand.isEnabled = true
-        if (enableSeek) {
-            commandCenter.skipForwardCommand.isEnabled = true
-            commandCenter.skipBackwardCommand.isEnabled = true
-        } else {
-            commandCenter.skipForwardCommand.isEnabled = false
-            commandCenter.skipBackwardCommand.isEnabled = false
-        }
-    }
-    
-    func setupRemoteTransportControls() {
-        let commandCenter = MPRemoteCommandCenter.shared()
-        
-        // Play command
-        commandCenter.playCommand.addTarget { event in
-            self.implementation.resume()
-            MPNowPlayingInfoCenter.default().playbackState = .playing
-            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-            return .success
-        }
-        
-        // Pause command
-        commandCenter.pauseCommand.addTarget { event in
-            self.implementation.pause()
-            MPNowPlayingInfoCenter.default().playbackState = .paused
-            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-            return .success
-        }
-
-        // toggle play/pause command
-        commandCenter.togglePlayPauseCommand.addTarget { event in
-            if self.implementation.isPlaying() {
-                self.implementation.pause()
-                MPNowPlayingInfoCenter.default().playbackState = .paused
-                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-                info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-            } else {
-                self.implementation.resume()
-                MPNowPlayingInfoCenter.default().playbackState = .playing
-                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-                info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-            }
-            return .success
-        }
-
-        commandCenter.skipForwardCommand.addTarget { event in
-            self.implementation.seekBy(offset: 10)
-            return .success
-        }
-
-        commandCenter.skipBackwardCommand.addTarget { event in
-            self.implementation.seekBy(offset: -10)
-            return .success
-        }
-
-        commandCenter.changePlaybackPositionCommand.addTarget { event in
-            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            let newTime = event.positionTime
-            self.implementation.seekTo(position: newTime)
-            // Update elapsed time so the scrubber reflects the new position
-            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = newTime
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-            return .success
-        }
+        implementation.enableCommandCenter(seekEnabled: enableSeek)
     }
 
 }

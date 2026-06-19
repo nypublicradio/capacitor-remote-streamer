@@ -1,8 +1,12 @@
 import Foundation
 import AVFoundation
 import Network
+import MediaPlayer
 
 class RemoteStreamer: NSObject {
+    /// Shared singleton so both the Capacitor plugin and CarPlay can use the same player
+    static let shared = RemoteStreamer()
+
     private var player: AVPlayer?
     private var timeObserver: Any?
     private var playbackBufferEmptyObserver: NSKeyValueObservation?
@@ -31,8 +35,12 @@ class RemoteStreamer: NSObject {
         super.init()
         setupInterruptionObserver()
         setupNetworkMonitor()
+        setupRemoteCommandCenter()
     }
     
+    /// Whether seek controls (skip forward/backward) are enabled
+    private var seekEnabled = false
+
     /// Flag to suppress the initial .paused KVO notification when creating a new player
     private var suppressPauseNotification = false
 
@@ -129,6 +137,102 @@ class RemoteStreamer: NSObject {
 
     func isPlaying() -> Bool {
         return player?.timeControlStatus == .playing
+    }
+
+    // MARK: - Remote Command Center (single owner)
+
+    /// Enable or disable seek controls. Called by the plugin/CarPlayMediaManager
+    /// based on whether the content is live or on-demand.
+    func setSeekEnabled(_ enabled: Bool) {
+        seekEnabled = enabled
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.skipForwardCommand.isEnabled = enabled
+        commandCenter.skipBackwardCommand.isEnabled = enabled
+        commandCenter.changePlaybackPositionCommand.isEnabled = enabled
+    }
+
+    /// Enable all playback controls (called when playback starts)
+    func enableCommandCenter(seekEnabled: Bool = false) {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.isEnabled = true
+        commandCenter.pauseCommand.isEnabled = true
+        commandCenter.togglePlayPauseCommand.isEnabled = true
+        setSeekEnabled(seekEnabled)
+    }
+
+    /// Disable all playback controls (called when nothing is playing)
+    func disableCommandCenter() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.isEnabled = false
+        commandCenter.pauseCommand.isEnabled = false
+        commandCenter.togglePlayPauseCommand.isEnabled = false
+        commandCenter.skipForwardCommand.isEnabled = false
+        commandCenter.skipBackwardCommand.isEnabled = false
+        commandCenter.changePlaybackPositionCommand.isEnabled = false
+    }
+
+    private func setupRemoteCommandCenter() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+
+        commandCenter.playCommand.addTarget { [weak self] _ in
+            self?.resume()
+            MPNowPlayingInfoCenter.default().playbackState = .playing
+            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            return .success
+        }
+
+        commandCenter.pauseCommand.addTarget { [weak self] _ in
+            self?.pause()
+            MPNowPlayingInfoCenter.default().playbackState = .paused
+            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            return .success
+        }
+
+        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self = self else { return .commandFailed }
+            if self.isPlaying() {
+                self.pause()
+                MPNowPlayingInfoCenter.default().playbackState = .paused
+                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            } else {
+                self.resume()
+                MPNowPlayingInfoCenter.default().playbackState = .playing
+                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            }
+            return .success
+        }
+
+        commandCenter.skipForwardCommand.preferredIntervals = [10]
+        commandCenter.skipForwardCommand.addTarget { [weak self] _ in
+            self?.seekBy(offset: 10)
+            return .success
+        }
+
+        commandCenter.skipBackwardCommand.preferredIntervals = [10]
+        commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
+            self?.seekBy(offset: -10)
+            return .success
+        }
+
+        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            self?.seekTo(position: event.positionTime)
+            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = event.positionTime
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            return .success
+        }
+
+        // Start with all controls disabled until playback actually begins
+        disableCommandCenter()
     }
     
     private func setupAudioSession() {

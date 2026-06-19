@@ -433,24 +433,45 @@ public class CarPlayMediaManager: NSObject {
         guard let streamUrl = browseUriCache[mediaId] else { return }
         let metadata = browseMetadataCache[mediaId]
 
-        // Enable remote transport controls
-        let commandCenter = MPRemoteCommandCenter.shared()
-        commandCenter.playCommand.isEnabled = true
-        commandCenter.pauseCommand.isEnabled = true
-        commandCenter.togglePlayPauseCommand.isEnabled = true
-        commandCenter.changePlaybackPositionCommand.isEnabled = true
-
         let isLive = metadata?.isLive ?? streamUrl.contains(".m3u8")
-        if !isLive {
-            commandCenter.skipForwardCommand.isEnabled = true
-            commandCenter.skipBackwardCommand.isEnabled = true
-        } else {
-            commandCenter.skipForwardCommand.isEnabled = false
-            commandCenter.skipBackwardCommand.isEnabled = false
+
+        // Enable command center via the single owner (RemoteStreamer)
+        RemoteStreamer.shared.enableCommandCenter(seekEnabled: !isLive)
+
+        // Play directly via the shared RemoteStreamer — works even if the plugin isn't loaded
+        RemoteStreamer.shared.play(url: streamUrl) { _ in }
+
+        // Set playback state
+        MPNowPlayingInfoCenter.default().playbackState = .playing
+
+        // Set Now Playing metadata
+        if let metadata = metadata {
+            var nowPlayingInfo = [String: Any]()
+            nowPlayingInfo[MPMediaItemPropertyTitle] = metadata.title
+            nowPlayingInfo[MPMediaItemPropertyArtist] = metadata.subtitle
+            nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = metadata.isLive
+            nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+            nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+            nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
+            if !metadata.isLive && metadata.durationSeconds > 0 {
+                nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = Double(metadata.durationSeconds)
+            }
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+
+            // Load artwork asynchronously
+            if !metadata.imageUrl.isEmpty {
+                loadImage(from: metadata.imageUrl) { image in
+                    if let image = image {
+                        let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                        info[MPMediaItemPropertyArtwork] = artwork
+                        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+                    }
+                }
+            }
         }
 
-        // Notify the plugin to start playback
-        // (plugin will set nowPlayingInfo AFTER activating the audio session)
+        // Also notify the plugin (if loaded) so JS listeners fire
         NotificationCenter.default.post(
             name: Notification.Name("CarPlayPlayRequest"),
             object: nil,
@@ -460,6 +481,16 @@ public class CarPlayMediaManager: NSObject {
                 "isLive": isLive
             ]
         )
+
+        // Navigate to Now Playing screen
+        DispatchQueue.main.async { [weak self] in
+            if let controller = self?.interfaceController {
+                let nowPlayingTemplate = CPNowPlayingTemplate.shared
+                if !(controller.topTemplate is CPNowPlayingTemplate) {
+                    controller.pushTemplate(nowPlayingTemplate, animated: true, completion: nil)
+                }
+            }
+        }
     }
 
     private func updateNowPlaying(title: String, subtitle: String, imageUrl: String, isLive: Bool, durationSeconds: Int = 0) {
