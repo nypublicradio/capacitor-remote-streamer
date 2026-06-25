@@ -69,14 +69,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func handleTimeUpdateEvent(notification: Notification) {
         if let userInfo = notification.userInfo, let currentTime = userInfo["currentTime"] as? Double {
             notifyListeners("timeUpdate", data: ["currentTime": currentTime])
-            // Update elapsed time and duration for the Now Playing timeline
-            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-            // Update duration from the player if available
-            if let duration = userInfo["duration"] as? Double, duration > 0 {
-                info[MPMediaItemPropertyPlaybackDuration] = duration
-            }
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            // Now Playing elapsed time is updated directly by RemoteStreamer.notifyTimeUpdate
         }
     }
 

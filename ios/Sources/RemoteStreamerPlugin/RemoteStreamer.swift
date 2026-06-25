@@ -568,6 +568,15 @@ class RemoteStreamer: NSObject {
             userInfo["duration"] = duration.seconds
         }
         NotificationCenter.default.post(name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil, userInfo: userInfo)
+
+        // Directly update Now Playing elapsed time so the CarPlay timeline works
+        // even when the Capacitor plugin/WebView isn't loaded
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = time
+        if let duration = player?.currentItem?.duration, duration.isNumeric, duration.seconds > 0 {
+            info[MPMediaItemPropertyPlaybackDuration] = duration.seconds
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
     
     func setVolume(volume: Double) {
