@@ -15,7 +15,8 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setNowPlayingInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "releasePlayer", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setMediaItems", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "setMediaItems", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getCurrentState", returnType: CAPPluginReturnPromise)
     ]
     
     private var implementation: RemoteStreamer { RemoteStreamer.shared }
@@ -95,11 +96,18 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let userInfo = notification.userInfo else { return }
 
         // CarPlayMediaManager already started playback and set Now Playing info.
-        // This handler only needs to notify the JS layer so the app UI can update.
-        let mediaId = userInfo["id"] as? String ?? ""
-        let isLive = userInfo["isLive"] as? Bool ?? false
+        // This handler notifies the JS layer with full metadata so the app UI can update.
+        var data: [String: Any] = [
+            "id": userInfo["id"] as? String ?? "",
+            "isLive": userInfo["isLive"] as? Bool ?? false,
+            "streamUrl": userInfo["streamUrl"] as? String ?? ""
+        ]
+        if let title = userInfo["title"] as? String { data["title"] = title }
+        if let artist = userInfo["artist"] as? String { data["artist"] = artist }
+        if let imageUrl = userInfo["imageUrl"] as? String { data["imageUrl"] = imageUrl }
+        if let duration = userInfo["duration"] as? Int { data["duration"] = duration }
 
-        notifyListeners("playFromCarPlay", data: ["id": mediaId, "isLive": isLive])
+        notifyListeners("playFromCarPlay", data: data)
     }
 
     @objc func play(_ call: CAPPluginCall) {
@@ -117,6 +125,9 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         } else {
             disableRemoteTransportControls()
         }
+
+        // Clear CarPlay mediaId since app is initiating playback
+        implementation.currentMediaId = nil
         
         implementation.play(url: url) { result in
             print("play")
@@ -216,6 +227,11 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
     
+    @objc func getCurrentState(_ call: CAPPluginCall) {
+        let state = implementation.getCurrentState()
+        call.resolve(state as [String: Any])
+    }
+
     func disableRemoteTransportControls() {
         implementation.disableCommandCenter()
     }

@@ -437,6 +437,9 @@ public class CarPlayMediaManager: NSObject {
 
         let isLive = metadata?.isLive ?? streamUrl.contains(".m3u8")
 
+        // Track which mediaId initiated playback from CarPlay
+        RemoteStreamer.shared.currentMediaId = mediaId
+
         // Enable command center via the single owner (RemoteStreamer)
         RemoteStreamer.shared.enableCommandCenter(seekEnabled: !isLive)
 
@@ -474,14 +477,21 @@ public class CarPlayMediaManager: NSObject {
         }
 
         // Also notify the plugin (if loaded) so JS listeners fire
+        var playRequestInfo: [String: Any] = [
+            "streamUrl": streamUrl,
+            "id": mediaId,
+            "isLive": isLive
+        ]
+        if let metadata = metadata {
+            playRequestInfo["title"] = metadata.title
+            playRequestInfo["artist"] = metadata.subtitle
+            playRequestInfo["imageUrl"] = metadata.imageUrl
+            playRequestInfo["duration"] = metadata.durationSeconds
+        }
         NotificationCenter.default.post(
             name: Notification.Name("CarPlayPlayRequest"),
             object: nil,
-            userInfo: [
-                "streamUrl": streamUrl,
-                "id": mediaId,
-                "isLive": isLive
-            ]
+            userInfo: playRequestInfo
         )
 
         // Navigate to Now Playing screen

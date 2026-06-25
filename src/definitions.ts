@@ -1,29 +1,30 @@
-import type { PluginListenerHandle } from '@capacitor/core';
+import type { PluginListenerHandle } from '@capacitor/core'
 
 export interface RemoteStreamerPlugin {
-  play(options: { url: string, enableCommandCenter?: boolean, enableCommandCenterSeek?: boolean }): Promise<void>;
-  pause(): Promise<void>;
-  resume(): Promise<void>;
-  seekTo(options: { position: number }): Promise<void>;
-  stop(): Promise<void>;
-  setVolume(options: { volume: number }): Promise<void>;
-  setPlaybackRate(options: { rate: number }): Promise<void>;
-  setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean }): Promise<void>;
-  releasePlayer(): Promise<void>;
-  setMediaItems(options: { items: CarMediaItem[] }): Promise<void>;
-  addListener(
+  play (options: { url: string, enableCommandCenter?: boolean, enableCommandCenterSeek?: boolean }): Promise<void>
+  pause (): Promise<void>
+  resume (): Promise<void>
+  seekTo (options: { position: number }): Promise<void>
+  stop (): Promise<void>
+  setVolume (options: { volume: number }): Promise<void>
+  setPlaybackRate (options: { rate: number }): Promise<void>
+  setNowPlayingInfo (options: { title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean }): Promise<void>
+  releasePlayer (): Promise<void>
+  setMediaItems (options: { items: CarMediaItem[] }): Promise<void>
+  getCurrentState (): Promise<PlayerState>
+  addListener (
     eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId',
     listenerFunc: (data: RemoteStreamerEventData) => void
-  ): Promise<PluginListenerHandle>;
-  removeAllListeners(): Promise<void>;
+  ): Promise<PluginListenerHandle>
+  removeAllListeners (): Promise<void>
 }
 
 export interface CarMediaItem {
-  id: string;
-  title: string;
-  artist: string;
-  imageUrl: string;
-  streamUrl: string;
+  id: string
+  title: string
+  artist: string
+  imageUrl: string
+  streamUrl: string
 }
 
 export type RemoteStreamerEventData =
@@ -35,46 +36,55 @@ export type RemoteStreamerEventData =
   | ErrorEvent
   | ID3MetadataEvent
   | PlayFromCarPlayEvent
-  | PlayFromMediaIdEvent;
+  | PlayFromMediaIdEvent
 
 export interface PlayEvent {
-  type: 'play';
+  type: 'play'
 }
 
 export interface PauseEvent {
-  type: 'pause';
+  type: 'pause'
 }
 
 export interface StopEvent {
-  type: 'stop';
+  type: 'stop'
 }
 
 export interface TimeUpdateEvent {
-  type: 'timeUpdate';
-  currentTime: number;
+  type: 'timeUpdate'
+  currentTime: number
 }
 
 export interface BufferingEvent {
-  type: 'buffering';
-  isBuffering: boolean;
+  type: 'buffering'
+  isBuffering: boolean
 }
 
 export interface ErrorEvent {
-  type: 'error';
-  message: string;
+  type: 'error'
+  message: string
 }
 
 export interface ID3MetadataEvent {
-  type: 'data';
-  message: object;
+  type: 'data'
+  message: object
 }
 
 export interface PlayFromCarPlayEvent {
-  type: 'playFromCarPlay';
-  id: string;
+  type: 'playFromCarPlay'
+  id: string
 }
 
 export interface PlayFromMediaIdEvent {
-  type: 'playFromMediaId';
-  mediaId: string;
+  type: 'playFromMediaId'
+  mediaId: string
+}
+
+export interface PlayerState {
+  isPlaying: boolean
+  currentUrl: string | null
+  currentTime: number
+  duration: number
+  isLiveStream: boolean
+  currentMediaId: string | null
 }

@@ -23,6 +23,7 @@ npx cap sync
 * [`setNowPlayingInfo(...)`](#setnowplayinginfo)
 * [`releasePlayer()`](#releaseplayer)
 * [`setMediaItems(...)`](#setmediaitems)
+* [`getCurrentState()`](#getcurrentstate)
 * [`addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId', ...)`](#addlistenererror--play--pause--stop--timeupdate--buffering--id3metadata--playfromcarplay--playfrommediaid-)
 * [`removeAllListeners()`](#removealllisteners)
 * [Interfaces](#interfaces)
@@ -147,6 +148,17 @@ setMediaItems(options: { items: CarMediaItem[]; }) => Promise<void>
 --------------------
 
 
+### getCurrentState()
+
+```typescript
+getCurrentState() => Promise<PlayerState>
+```
+
+**Returns:** <code>Promise&lt;<a href="#playerstate">PlayerState</a>&gt;</code>
+
+--------------------
+
+
 ### addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId', ...)
 
 ```typescript
@@ -184,6 +196,18 @@ removeAllListeners() => Promise<void>
 | **`artist`**    | <code>string</code> |
 | **`imageUrl`**  | <code>string</code> |
 | **`streamUrl`** | <code>string</code> |
+
+
+#### PlayerState
+
+| Prop                 | Type                        |
+| -------------------- | --------------------------- |
+| **`isPlaying`**      | <code>boolean</code>        |
+| **`currentUrl`**     | <code>string \| null</code> |
+| **`currentTime`**    | <code>number</code>         |
+| **`duration`**       | <code>number</code>         |
+| **`isLiveStream`**   | <code>boolean</code>        |
+| **`currentMediaId`** | <code>string \| null</code> |
 
 
 #### PluginListenerHandle

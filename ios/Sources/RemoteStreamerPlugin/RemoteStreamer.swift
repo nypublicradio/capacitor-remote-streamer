@@ -17,6 +17,8 @@ class RemoteStreamer: NSObject {
 
     // Reconnection state
     private var currentUrl: String?
+    /// The mediaId if playback was started from CarPlay browse tree
+    var currentMediaId: String?
     private var isLiveStream = false
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 3
@@ -137,6 +139,31 @@ class RemoteStreamer: NSObject {
 
     func isPlaying() -> Bool {
         return player?.timeControlStatus == .playing
+    }
+
+    func getCurrentState() -> [String: Any] {
+        let currentTime = player?.currentTime().seconds ?? 0
+        let duration = player?.currentItem?.duration.seconds ?? 0
+        var state: [String: Any] = [
+            "isPlaying": isPlaying(),
+            "currentUrl": currentUrl as Any,
+            "currentTime": currentTime.isFinite ? currentTime : 0,
+            "duration": (duration.isFinite && duration > 0) ? duration : 0,
+            "isLiveStream": isLiveStream,
+            "currentMediaId": currentMediaId as Any
+        ]
+        // Include cached metadata from CarPlay browse tree
+        if #available(iOS 14.0, *), let mediaId = currentMediaId,
+           let metadata = CarPlayMediaManager.shared.getMetadata(for: mediaId) {
+            state["title"] = metadata.title
+            state["artist"] = metadata.subtitle
+            state["imageUrl"] = metadata.imageUrl
+            state["duration"] = metadata.durationSeconds
+            if let streamUrl = CarPlayMediaManager.shared.getStreamUrl(for: mediaId) {
+                state["streamUrl"] = streamUrl
+            }
+        }
+        return state
     }
 
     // MARK: - Remote Command Center (single owner)

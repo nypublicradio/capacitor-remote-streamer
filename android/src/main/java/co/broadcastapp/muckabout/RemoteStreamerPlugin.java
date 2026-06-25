@@ -45,14 +45,21 @@ import java.util.List;
 public class RemoteStreamerPlugin extends Plugin {
     private boolean isLiveStream = false;
     private RemoteStreamerService service = null;
+    private boolean foregroundInitialized = false;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
             RemoteStreamerService.LocalBinder binder = (RemoteStreamerService.LocalBinder) iBinder;
             service = binder.getService();
-            Intent intent = new Intent(getActivity(), getActivity().getClass());
-            service.connectAndInitialize(RemoteStreamerPlugin.this, intent);
+            if (foregroundInitialized) {
+                // Full foreground init (startForegroundService was called)
+                Intent intent = new Intent(getActivity(), getActivity().getClass());
+                service.connectAndInitialize(RemoteStreamerPlugin.this, intent);
+            } else {
+                // Lightweight connection for event forwarding only
+                service.connectPlugin(RemoteStreamerPlugin.this);
+            }
         }
 
         @Override
@@ -65,12 +72,25 @@ public class RemoteStreamerPlugin extends Plugin {
     @Override
     public void load() {
         super.load();
+        // Bind to the media service immediately so Android Auto events
+        // can reach the JS layer even before the first play() call.
+        // Use bindService only (not startForegroundService) to avoid showing
+        // a notification before playback starts.
+        Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
+        getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
 
     public void startMediaService() {
+        foregroundInitialized = true;
         Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
         ContextCompat.startForegroundService(getContext(), intent);
-        getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+        // If already bound, upgrade to full foreground initialization
+        if (service != null) {
+            Intent activityIntent = new Intent(getActivity(), getActivity().getClass());
+            service.connectAndInitialize(RemoteStreamerPlugin.this, activityIntent);
+        } else {
+            getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+        }
     }
 
 
@@ -137,6 +157,7 @@ public class RemoteStreamerPlugin extends Plugin {
         }
 
         if (service != null) {
+            service.setCurrentMediaId(null); // Clear Auto mediaId since app is initiating playback
             service.play(url);
             call.resolve();
         } else {
@@ -252,6 +273,45 @@ public class RemoteStreamerPlugin extends Plugin {
         if (service != null) {
             service.releasePlayer();
         }
+    }
+
+    @PluginMethod
+    public void getCurrentState(PluginCall call) {
+        JSObject state = new JSObject();
+        if (service != null) {
+            state.put("isPlaying", service.isCurrentlyPlaying());
+            state.put("currentUrl", service.getCurrentUrl());
+            state.put("currentTime", service.getCurrentPosition() / 1000.0);
+            long dur = service.getDuration();
+            state.put("duration", dur > 0 ? dur / 1000.0 : 0);
+            state.put("isLiveStream", service.isLiveStream());
+            state.put("currentMediaId", service.getCurrentMediaId());
+            // Include cached metadata so the app can display correct info
+            String mediaId = service.getCurrentMediaId();
+            if (mediaId != null) {
+                String[] meta = service.getMetadataForMediaId(mediaId);
+                if (meta != null) {
+                    state.put("title", meta[0]);
+                    state.put("artist", meta[1]);
+                    state.put("imageUrl", meta[2]);
+                    if (meta.length > 3) {
+                        try { state.put("duration", Integer.parseInt(meta[3])); } catch (NumberFormatException ignored) {}
+                    }
+                }
+                String streamUrl = service.getStreamUrlForMediaId(mediaId);
+                if (streamUrl != null) {
+                    state.put("streamUrl", streamUrl);
+                }
+            }
+        } else {
+            state.put("isPlaying", false);
+            state.put("currentUrl", null);
+            state.put("currentTime", 0);
+            state.put("duration", 0);
+            state.put("isLiveStream", false);
+            state.put("currentMediaId", null);
+        }
+        call.resolve(state);
     }
 
 

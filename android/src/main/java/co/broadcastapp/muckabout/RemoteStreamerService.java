@@ -111,6 +111,7 @@ import android.net.NetworkRequest;
 
         // Reconnection state
         private String currentUrl;
+        private String currentMediaId; // mediaId if playback was started from Android Auto browse tree
         private int reconnectAttempts = 0;
         private static final int MAX_RECONNECT_ATTEMPTS = 3;
         private static final long STALL_TIMEOUT_MS = 30000; // 30 seconds
@@ -218,7 +219,7 @@ import android.net.NetworkRequest;
             List<BffApiClient.LiveStream> streams = bffApiClient.fetchLiveStreams();
             for (BffApiClient.LiveStream stream : streams) {
                 String subtitle = stream.currentShowTitle.isEmpty() ? "Live" : stream.currentShowTitle;
-                items.add(makePlayableItem("live_" + stream.slug, stream.stationName, subtitle, stream.hlsUrl, stream.imageUrl));
+                items.add(makePlayableItem("live_" + stream.slug, stream.stationName, subtitle, stream.hlsUrl, stream.imageUrl, 0));
             }
             return items;
         }
@@ -231,7 +232,7 @@ import android.net.NetworkRequest;
                 if (n.durationSeconds > 0) {
                     subtitle += " | " + (n.durationSeconds / 60) + " min";
                 }
-                items.add(makePlayableItem("news_" + n.id, n.title, subtitle, n.audioUrl, n.imageUrl));
+                items.add(makePlayableItem("news_" + n.id, n.title, subtitle, n.audioUrl, n.imageUrl, n.durationSeconds));
             }
             return items;
         }
@@ -244,7 +245,7 @@ import android.net.NetworkRequest;
                 if (story.durationSeconds > 0) {
                     subtitle += " | " + (story.durationSeconds / 60) + " min";
                 }
-                items.add(makePlayableItem("story_" + story.id, story.title, subtitle, story.audioUrl, story.imageUrl));
+                items.add(makePlayableItem("story_" + story.id, story.title, subtitle, story.audioUrl, story.imageUrl, story.durationSeconds));
             }
             return items;
         }
@@ -330,7 +331,7 @@ import android.net.NetworkRequest;
                 if (ep.durationSeconds > 0) {
                     subtitle += " | " + (ep.durationSeconds / 60) + " min";
                 }
-                items.add(makePlayableItem("episode_" + ep.id, ep.title, subtitle, ep.audioUrl, ep.imageUrl));
+                items.add(makePlayableItem("episode_" + ep.id, ep.title, subtitle, ep.audioUrl, ep.imageUrl, ep.durationSeconds));
             }
             return items;
         }
@@ -349,6 +350,34 @@ import android.net.NetworkRequest;
         public void setMediaItems(List<MediaBrowserCompat.MediaItem> items) {
             this.mediaItems = items;
             notifyChildrenChanged(ROOT_ID);
+        }
+
+        public void setCurrentMediaId(String mediaId) {
+            this.currentMediaId = mediaId;
+        }
+
+        public String getCurrentMediaId() {
+            return currentMediaId;
+        }
+
+        public String getCurrentUrl() {
+            return currentUrl;
+        }
+
+        public boolean isCurrentlyPlaying() {
+            return playbackState == PlaybackStateCompat.STATE_PLAYING;
+        }
+
+        public long getDuration() {
+            return duration;
+        }
+
+        /**
+         * Returns cached browse metadata for a mediaId: [title, subtitle, imageUrl].
+         * Returns null if not found.
+         */
+        public String[] getMetadataForMediaId(String mediaId) {
+            return browseMetadataCache.get(mediaId);
         }
 
         public String getStreamUrlForMediaId(String mediaId) {
@@ -403,7 +432,7 @@ import android.net.NetworkRequest;
             }
         }
 
-        private MediaBrowserCompat.MediaItem makePlayableItem(String mediaId, String title, String subtitle, String streamUrl, String imageUrl) {
+        private MediaBrowserCompat.MediaItem makePlayableItem(String mediaId, String title, String subtitle, String streamUrl, String imageUrl, int durationSeconds) {
             // Cache the URI and metadata for later playback lookup
             if (streamUrl != null && !streamUrl.isEmpty()) {
                 browseUriCache.put(mediaId, streamUrl);
@@ -413,7 +442,8 @@ import android.net.NetworkRequest;
             browseMetadataCache.put(mediaId, new String[]{
                 title != null ? title : "",
                 playerSubtitle,
-                imageUrl != null ? imageUrl : ""
+                imageUrl != null ? imageUrl : "",
+                String.valueOf(durationSeconds)
             });
             Bundle extras = makeListContentStyleExtras();
             MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
@@ -479,7 +509,8 @@ import android.net.NetworkRequest;
                     browseMetadataCache.put(mediaId, new String[]{
                         defaultItem.title,
                         defaultItem.showTitle,
-                        defaultItem.imageUrl
+                        defaultItem.imageUrl,
+                        String.valueOf(defaultItem.durationSeconds)
                     });
                     handler.post(() -> {
                         setTitle(defaultItem.title);
@@ -535,11 +566,22 @@ import android.net.NetworkRequest;
             return super.onUnbind(intent);
         }
 
-        public void connectAndInitialize(RemoteStreamerPlugin plugin, Intent intent) {
+        /**
+         * Lightweight connection: sets the plugin reference so Auto events reach JS.
+         * Called on plugin load() before any playback occurs.
+         */
+        public void connectPlugin(RemoteStreamerPlugin plugin) {
             this.plugin = plugin;
-
             // Update the callback with the plugin reference (was null during onCreate)
             mediaSession.setCallback(new MediaSessionCallback(plugin, this));
+        }
+
+        /**
+         * Full initialization: sets up the foreground notification for active playback.
+         * Called when startForegroundService has been invoked (first play() call).
+         */
+        public void connectAndInitialize(RemoteStreamerPlugin plugin, Intent intent) {
+            connectPlugin(plugin);
 
             notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -836,8 +878,7 @@ import android.net.NetworkRequest;
                 Log.d("stream", "playing");
                 setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
                 update();
-
-                if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
+                // JS "play" event is emitted by onIsPlayingChanged when playback actually starts
             });
         }
 
@@ -851,7 +892,7 @@ import android.net.NetworkRequest;
                         player.pause();
                     }
                 });
-                if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
+                // JS "pause" event is emitted by onIsPlayingChanged when player actually pauses
             }
         }
 
@@ -895,7 +936,7 @@ import android.net.NetworkRequest;
                         player.play();
                         setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
                         update();
-                        if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
+                        // JS "play" event is emitted by onIsPlayingChanged when playback actually starts
                     }
                 }
             });
@@ -1132,7 +1173,7 @@ import android.net.NetworkRequest;
                     player.play();
                     setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
                     update();
-                    if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
+                    // JS "play" event is emitted by onIsPlayingChanged when playback actually starts
                 }
 
                 wasPlayingBeforeStall = false;

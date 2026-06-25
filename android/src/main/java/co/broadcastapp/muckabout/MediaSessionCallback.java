@@ -18,31 +18,55 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback {
 
     @Override
     public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
+        String streamUrl = null;
         if (service != null) {
-            String streamUrl = service.getStreamUrlForMediaId(mediaId);
+            streamUrl = service.getStreamUrlForMediaId(mediaId);
             if (streamUrl != null) {
+                service.setCurrentMediaId(mediaId);
                 service.updateMetadataForMediaId(mediaId);
                 service.play(streamUrl);
             }
         }
-        // Also notify JS layer if plugin is connected
+        // Notify JS layer with full metadata so the app UI can load the content
         if (plugin != null) {
+            boolean isLive = mediaId.startsWith("live_");
             JSObject data = new JSObject();
             data.put("mediaId", mediaId);
+            data.put("isLive", isLive);
+            if (streamUrl != null) data.put("streamUrl", streamUrl);
+            if (service != null) {
+                String[] meta = service.getMetadataForMediaId(mediaId);
+                if (meta != null) {
+                    data.put("title", meta[0]);
+                    data.put("artist", meta[1]);
+                    data.put("imageUrl", meta[2]);
+                    if (meta.length > 3) {
+                        try { data.put("duration", Integer.parseInt(meta[3])); } catch (NumberFormatException ignored) {}
+                    }
+                }
+            }
             plugin.onPlayerEvent("playFromMediaId", data);
         }
     }
 
     @Override
     public void onPlay() {
-        if (plugin != null) plugin.actionCallback("play");
-        if (service != null) service.resume();
+        // Use a single path to avoid duplicate service calls.
+        // actionCallback("play") already calls service.resume() internally.
+        if (plugin != null) {
+            plugin.actionCallback("play");
+        } else if (service != null) {
+            service.resume();
+        }
     }
 
     @Override
     public void onPause() {
-        if (plugin != null) plugin.actionCallback("pause");
-        if (service != null) service.pause();
+        if (plugin != null) {
+            plugin.actionCallback("pause");
+        } else if (service != null) {
+            service.pause();
+        }
     }
 
     @Override
@@ -51,45 +75,37 @@ public class MediaSessionCallback extends MediaSessionCompat.Callback {
             JSObject data = new JSObject();
             data.put("seekTime", pos);
             plugin.actionCallback("seekto", data);
+        } else if (service != null) {
+            service.seekTo(pos);
         }
-        if (service != null) service.seekTo(pos);
     }
 
     @Override
     public void onRewind() {
-        if (plugin != null) plugin.actionCallback("seekbackward");
-        // Native seek for Android Auto
         if (service != null) service.seekBy(-SEEK_INCREMENT_MS);
     }
 
     @Override
     public void onFastForward() {
-        if (plugin != null) plugin.actionCallback("seekforward");
-        // Native seek for Android Auto
         if (service != null) service.seekBy(SEEK_INCREMENT_MS);
     }
 
     @Override
     public void onSkipToPrevious() {
         if (service != null && !service.isLiveStream()) {
-            // On-demand: seek backward 10 seconds
             service.seekBy(-SEEK_INCREMENT_MS);
         }
-        if (plugin != null) plugin.actionCallback("previoustrack");
     }
 
     @Override
     public void onSkipToNext() {
         if (service != null && !service.isLiveStream()) {
-            // On-demand: seek forward 10 seconds
             service.seekBy(SEEK_INCREMENT_MS);
         }
-        if (plugin != null) plugin.actionCallback("nexttrack");
     }
 
     @Override
     public void onStop() {
-        if (plugin != null) plugin.actionCallback("stop");
         if (service != null) service.stop();
     }
 }
