@@ -1327,19 +1327,30 @@ import android.net.NetworkRequest;
                 }
                 switch (focusChange) {
                     case AudioManager.AUDIOFOCUS_GAIN:
-                        player.setVolume(1.0f);
+                        // We have regained focus.
+                        // If we were ducking, return to full volume.
+                        if (player != null) player.setVolume(1.0f);
+                        // If we were paused for a transient loss, resume playback.
                         if (resumeOnFocusLossTransient) {
                             resumeOnFocusLossTransient = false;
-                            player.play();
+                            if (player != null) player.play();
                         }
                         break;
                     case AudioManager.AUDIOFOCUS_LOSS:
+                        // Permanent loss of focus. Stop playback and don't automatically resume.
+                        resumeOnFocusLossTransient = false;
+                        if (player != null) player.pause();
+                        break;
                     case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                        resumeOnFocusLossTransient = player.isPlaying();
-                        player.pause();
+                        // Temporary loss of focus. Pause playback and set a flag to resume.
+                        if (player != null && player.isPlaying()) {
+                            resumeOnFocusLossTransient = true;
+                            player.pause();
+                        }
                         break;
                     case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                        player.setVolume(0.1f);
+                        // We can keep playing, but at a lower volume ("ducking").
+                        if (player != null) player.setVolume(0.1f);
                         break;
                 }
             });
