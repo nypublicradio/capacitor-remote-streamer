@@ -562,8 +562,12 @@ import android.net.NetworkRequest;
             if (intent != null && "android.media.browse.MediaBrowserService".equals(intent.getAction())) {
                 return super.onUnbind(intent);
             }
-            this.destroy();
-            return super.onUnbind(intent);
+            // The plugin is unbinding because the app is going away.
+            // We should not destroy the service, which needs to continue for background playback.
+            // We will just clear the plugin reference to avoid sending events to a destroyed plugin.
+            this.plugin = null;
+            mediaSession.setCallback(new MediaSessionCallback(null, this));
+            return false;
         }
 
         /**
@@ -647,6 +651,16 @@ import android.net.NetworkRequest;
             //mediaSession.setActive(false);
             notificationManager.cancel(NOTIFICATION_ID);
             stopSelf();
+        }
+
+        @Override
+        public void onTaskRemoved(Intent rootIntent) {
+            // When the app is swiped away from recents, stop the service
+            // if it's not playing.
+            if (player == null || !player.isPlaying()) {
+                destroy();
+            }
+            super.onTaskRemoved(rootIntent);
         }
 
         @Override
@@ -980,6 +994,7 @@ import android.net.NetworkRequest;
             update();
             releasePlayer();
             stopForeground(true);
+            stopSelf();
         }
 
         public void releasePlayer() {
