@@ -43,8 +43,8 @@ import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.hls.HlsMediaSource;
 import com.google.android.exoplayer2.upstream.DefaultDataSource;
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource;
-import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
+import com.google.android.exoplayer2.audio.AudioAttributes;
 import android.media.AudioManager;
 import com.getcapacitor.JSObject;
 import java.net.HttpURLConnection;
@@ -540,8 +540,14 @@ import android.net.NetworkRequest;
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build();
 
+            // Create system audio attributes for audio focus request
+            android.media.AudioAttributes systemAudioAttributes = new android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build();
+
             focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setAudioAttributes(playerAudioAttributes)
+                    .setAudioAttributes(systemAudioAttributes)
                     .setAcceptsDelayedFocusGain(true)
                     .setOnAudioFocusChangeListener(this)
                     .build();
