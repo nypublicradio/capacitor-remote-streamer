@@ -121,6 +121,7 @@ import android.net.NetworkRequest;
         private boolean wasPlayingBeforeStall = false;
         private long savedPosition = 0; // saved playback position for on-demand recovery
         private ConnectivityManager connectivityManager;
+        private AudioAttributes playerAudioAttributes;
         private ConnectivityManager.NetworkCallback networkCallback;
 
         private RemoteStreamerPlugin plugin;
@@ -534,13 +535,13 @@ import android.net.NetworkRequest;
                 new DefaultHttpDataSource.Factory().setUserAgent(userAgent);
             dataSourceFactory = new DefaultDataSource.Factory(this, httpDataSourceFactory);
 
-            AudioAttributes audioAttributes = new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            this.playerAudioAttributes = new AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build();
 
             focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setAudioAttributes(audioAttributes)
+                    .setAudioAttributes(playerAudioAttributes)
                     .setAcceptsDelayedFocusGain(true)
                     .setOnAudioFocusChangeListener(this)
                     .build();
@@ -863,6 +864,7 @@ import android.net.NetworkRequest;
                 }
 
                 player = new ExoPlayer.Builder(this).build();
+                player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource;
                 if (url.contains(".m3u8")) {
@@ -898,12 +900,15 @@ import android.net.NetworkRequest;
             if (player != null) {
                 Log.d("RemoteStreamerService", "pausing playback");
                 handler.post(() -> {
-                    setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
-                    update();
                     if (player != null) {
+                        setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
+                        update();
                         player.pause();
+                        // Abandon audio focus when paused by the user or system
+                        audioManager.abandonAudioFocusRequest(focusRequest);
                     }
                 });
+
                 // JS "pause" event is emitted by onIsPlayingChanged when player actually pauses
             }
         }
@@ -1134,6 +1139,7 @@ import android.net.NetworkRequest;
                 }
 
                 player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
+                player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
                         .createMediaSource(MediaItem.fromUri(url));
@@ -1163,6 +1169,7 @@ import android.net.NetworkRequest;
                 }
 
                 player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
+                player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource;
                 if (currentUrl.contains(".m3u8")) {
@@ -1321,39 +1328,42 @@ import android.net.NetworkRequest;
 
         @Override
         public void onAudioFocusChange(int focusChange) {
-            handler.post(() -> {
-                if (player == null) {
-                    return;
-                }
-                switch (focusChange) {
-                    case AudioManager.AUDIOFOCUS_GAIN:
-                        // We have regained focus.
-                        // If we were ducking, return to full volume.
-                        if (player != null) player.setVolume(1.0f);
-                        // If we were paused for a transient loss, resume playback.
-                        if (resumeOnFocusLossTransient) {
-                            resumeOnFocusLossTransient = false;
-                            if (player != null) player.play();
-                        }
-                        break;
-                    case AudioManager.AUDIOFOCUS_LOSS:
-                        // Permanent loss of focus. Stop playback and don't automatically resume.
+            // This is called on the main looper, so no need to post to handler.
+            if (player == null && focusChange != AudioManager.AUDIOFOCUS_GAIN) {
+                return;
+            }
+            switch (focusChange) {
+                case AudioManager.AUDIOFOCUS_GAIN:
+                    Log.d(TAG, "onAudioFocusChange: AUDIOFOCUS_GAIN");
+                    // We have regained focus.
+                    // If we were ducking, return to full volume.
+                    if (player != null) player.setVolume(1.0f);
+                    // If we were paused for a transient loss, resume playback.
+                    if (resumeOnFocusLossTransient) {
                         resumeOnFocusLossTransient = false;
-                        if (player != null) player.pause();
-                        break;
-                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                        // Temporary loss of focus. Pause playback and set a flag to resume.
-                        if (player != null && player.isPlaying()) {
-                            resumeOnFocusLossTransient = true;
-                            player.pause();
-                        }
-                        break;
-                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                        // We can keep playing, but at a lower volume ("ducking").
-                        if (player != null) player.setVolume(0.1f);
-                        break;
-                }
-            });
+                        resume(); // Use the service's resume method for consistency
+                    }
+                    break;
+                case AudioManager.AUDIOFOCUS_LOSS:
+                    Log.d(TAG, "onAudioFocusChange: AUDIOFOCUS_LOSS (permanent)");
+                    // Permanent loss of focus. The user must manually resume playback.
+                    resumeOnFocusLossTransient = false;
+                    pause();
+                    break;
+                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                    Log.d(TAG, "onAudioFocusChange: AUDIOFOCUS_LOSS_TRANSIENT");
+                    // Temporary loss of focus. Pause playback and set a flag to resume.
+                    if (player != null && player.isPlaying()) {
+                        resumeOnFocusLossTransient = true;
+                        player.pause(); // Just pause the player directly, don't abandon focus
+                    }
+                    break;
+                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                    Log.d(TAG, "onAudioFocusChange: AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK");
+                    // We can keep playing, but at a lower volume ("ducking").
+                    if (player != null) player.setVolume(0.1f);
+                    break;
+            }
         }
 
         public void setVolume(float volume) {
