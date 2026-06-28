@@ -558,16 +558,14 @@ import android.net.NetworkRequest;
 
         @Override
         public boolean onUnbind(Intent intent) {
-            // Only destroy when the local plugin unbinds, not when Android Auto disconnects
-            if (intent != null && "android.media.browse.MediaBrowserService".equals(intent.getAction())) {
-                return super.onUnbind(intent);
-            }
-            // The plugin is unbinding because the app is going away.
-            // We should not destroy the service, which needs to continue for background playback.
-            // We will just clear the plugin reference to avoid sending events to a destroyed plugin.
+            // When any client unbinds (the app activity or an auto client), we don't want to
+            // destroy the service, as it needs to continue for background playback.
+            // We just clear the plugin reference to avoid sending events to a destroyed
+            // webview and update the media session callback. The service will be stopped only when
+            // the user explicitly stops playback or dismisses the notification.
             this.plugin = null;
             mediaSession.setCallback(new MediaSessionCallback(null, this));
-            return false;
+            return super.onUnbind(intent);
         }
 
         /**
