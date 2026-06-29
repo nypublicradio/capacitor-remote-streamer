@@ -72,6 +72,8 @@ public class RemoteStreamerPlugin extends Plugin {
     @Override
     public void load() {
         super.load();
+        Log.d("streamer", "######## version 1");
+
         // Bind to the media service immediately so Android Auto events
         // can reach the JS layer even before the first play() call.
         // Use bindService only (not startForegroundService) to avoid showing
@@ -141,8 +143,11 @@ public class RemoteStreamerPlugin extends Plugin {
             return;
         }
 
-        if (service == null) {
+        if (!foregroundInitialized) {
             startMediaService();
+        }
+
+        if (service == null) {
             // Wait for service to connect? Ideally we should queue the command or wait.
             // The original code waited with sleep loop.
             int retries = 0;

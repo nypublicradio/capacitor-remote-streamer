@@ -870,6 +870,7 @@ import android.net.NetworkRequest;
                 }
 
                 player = new ExoPlayer.Builder(this).build();
+                player.setWakeMode(C.WAKE_MODE_NETWORK);
                 player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource;
@@ -1145,6 +1146,7 @@ import android.net.NetworkRequest;
                 }
 
                 player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
+                player.setWakeMode(C.WAKE_MODE_NETWORK);
                 player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
@@ -1175,6 +1177,7 @@ import android.net.NetworkRequest;
                 }
 
                 player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
+                player.setWakeMode(C.WAKE_MODE_NETWORK);
                 player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource;
