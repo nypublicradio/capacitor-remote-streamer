@@ -72,7 +72,6 @@ public class RemoteStreamerPlugin extends Plugin {
     @Override
     public void load() {
         super.load();
-        Log.d("streamer", "######## version 1");
 
         // Bind to the media service immediately so Android Auto events
         // can reach the JS layer even before the first play() call.
