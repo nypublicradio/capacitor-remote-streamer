@@ -370,6 +370,12 @@ import android.net.NetworkRequest;
         }
 
         public long getDuration() {
+            if (player != null) {
+                long d = player.getDuration();
+                if (d != C.TIME_UNSET && d > 0) {
+                    return d;
+                }
+            }
             return duration;
         }
 
@@ -565,13 +571,15 @@ import android.net.NetworkRequest;
 
         @Override
         public boolean onUnbind(Intent intent) {
-            // When any client unbinds (the app activity or an auto client), we don't want to
-            // destroy the service, as it needs to continue for background playback.
-            // We just clear the plugin reference to avoid sending events to a destroyed
-            // webview and update the media session callback. The service will be stopped only when
-            // the user explicitly stops playback or dismisses the notification.
-            this.plugin = null;
-            mediaSession.setCallback(new MediaSessionCallback(null, this));
+            if (intent != null && "android.media.browse.MediaBrowserService".equals(intent.getAction())) {
+                // MediaBrowser client (Android Auto / system) disconnected.
+                // Do NOT null the plugin — the app activity is still alive.
+            } else {
+                // Local binder (app activity) disconnected.
+                // Clear the plugin reference to avoid sending events to a dead WebView.
+                this.plugin = null;
+                mediaSession.setCallback(new MediaSessionCallback(null, this));
+            }
             return super.onUnbind(intent);
         }
 
@@ -590,57 +598,59 @@ import android.net.NetworkRequest;
          * Called when startForegroundService has been invoked (first play() call).
          */
         public void connectAndInitialize(RemoteStreamerPlugin plugin, Intent intent) {
-            connectPlugin(plugin);
+            handler.post(() -> {
+                connectPlugin(plugin);
 
-            notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                NotificationChannel channel = new NotificationChannel("playback", "Playback", NotificationManager.IMPORTANCE_LOW);
-                notificationManager.createNotificationChannel(channel);
-            }
+                notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    NotificationChannel channel = new NotificationChannel("playback", "Playback", NotificationManager.IMPORTANCE_LOW);
+                    notificationManager.createNotificationChannel(channel);
+                }
 
-            notificationStyle = new MediaStyle().setMediaSession(mediaSession.getSessionToken());
-            notificationBuilder = new NotificationCompat.Builder(this, "playback")
-                    .setStyle(notificationStyle)
-                    .setSmallIcon(R.drawable.ic_baseline_wnyc_white)
-                    .setContentIntent(PendingIntent.getActivity(getApplicationContext(), 0, intent, PendingIntent.FLAG_IMMUTABLE))
-                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
+                notificationStyle = new MediaStyle().setMediaSession(mediaSession.getSessionToken());
+                notificationBuilder = new NotificationCompat.Builder(RemoteStreamerService.this, "playback")
+                        .setStyle(notificationStyle)
+                        .setSmallIcon(R.drawable.ic_baseline_wnyc_white)
+                        .setContentIntent(PendingIntent.getActivity(getApplicationContext(), 0, intent, PendingIntent.FLAG_IMMUTABLE))
+                        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIFICATION_ID, notificationBuilder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-            } else {
-                startForeground(NOTIFICATION_ID, notificationBuilder.build());
-            }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notificationBuilder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+                } else {
+                    startForeground(NOTIFICATION_ID, notificationBuilder.build());
+                }
 
-            notificationActions.put("play", new NotificationCompat.Action(
-                    R.drawable.ic_baseline_play_arrow_24, "Play", MediaButtonReceiver.buildMediaButtonPendingIntent(this, (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PLAY))
-            ));
-            notificationActions.put("pause", new NotificationCompat.Action(
-                    R.drawable.ic_baseline_pause_24, "Pause", MediaButtonReceiver.buildMediaButtonPendingIntent(this, (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PAUSE))
-            ));
-            notificationActions.put("seekbackward", new NotificationCompat.Action(
-                    R.drawable.ic_baseline_previous10, "Previous Track", MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_REWIND)
-            ));
-            notificationActions.put("seekforward", new NotificationCompat.Action(
-                    R.drawable.ic_baseline_next10, "Next Track", MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_FAST_FORWARD)
-            ));
-            notificationActions.put("previoustrack", new NotificationCompat.Action(
-                    R.drawable.ic_baseline_previous10, "Previous Track", MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
-            ));
-            notificationActions.put("nexttrack", new NotificationCompat.Action(
-                    R.drawable.ic_baseline_next10, "Next Track", MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT)
-            ));
-            notificationActions.put("stop", new NotificationCompat.Action(
-                    R.drawable.ic_baseline_stop_24, "Stop", MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_STOP)
-            ));
+                notificationActions.put("play", new NotificationCompat.Action(
+                        R.drawable.ic_baseline_play_arrow_24, "Play", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PLAY))
+                ));
+                notificationActions.put("pause", new NotificationCompat.Action(
+                        R.drawable.ic_baseline_pause_24, "Pause", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PAUSE))
+                ));
+                notificationActions.put("seekbackward", new NotificationCompat.Action(
+                        R.drawable.ic_baseline_previous10, "Previous Track", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_REWIND)
+                ));
+                notificationActions.put("seekforward", new NotificationCompat.Action(
+                        R.drawable.ic_baseline_next10, "Next Track", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_FAST_FORWARD)
+                ));
+                notificationActions.put("previoustrack", new NotificationCompat.Action(
+                        R.drawable.ic_baseline_previous10, "Previous Track", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+                ));
+                notificationActions.put("nexttrack", new NotificationCompat.Action(
+                        R.drawable.ic_baseline_next10, "Next Track", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT)
+                ));
+                notificationActions.put("stop", new NotificationCompat.Action(
+                        R.drawable.ic_baseline_stop_24, "Stop", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_STOP)
+                ));
 
-            playbackStateActions.put("previoustrack", PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
-            playbackStateActions.put("seekbackward", PlaybackStateCompat.ACTION_REWIND);
-            playbackStateActions.put("play", (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PLAY));
-            playbackStateActions.put("pause", (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PAUSE));
-            playbackStateActions.put("seekforward", PlaybackStateCompat.ACTION_FAST_FORWARD);
-            playbackStateActions.put("nexttrack", PlaybackStateCompat.ACTION_SKIP_TO_NEXT);
-            playbackStateActions.put("seekto", PlaybackStateCompat.ACTION_SEEK_TO);
-            playbackStateActions.put("stop", PlaybackStateCompat.ACTION_STOP);
+                playbackStateActions.put("previoustrack", PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
+                playbackStateActions.put("seekbackward", PlaybackStateCompat.ACTION_REWIND);
+                playbackStateActions.put("play", (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PLAY));
+                playbackStateActions.put("pause", (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PAUSE));
+                playbackStateActions.put("seekforward", PlaybackStateCompat.ACTION_FAST_FORWARD);
+                playbackStateActions.put("nexttrack", PlaybackStateCompat.ACTION_SKIP_TO_NEXT);
+                playbackStateActions.put("seekto", PlaybackStateCompat.ACTION_SEEK_TO);
+                playbackStateActions.put("stop", PlaybackStateCompat.ACTION_STOP);
+            });
         }
 
         public void destroy() {
@@ -654,7 +664,9 @@ import android.net.NetworkRequest;
             }
             stopForeground(true);
             //mediaSession.setActive(false);
-            notificationManager.cancel(NOTIFICATION_ID);
+            if (notificationManager != null) {
+                notificationManager.cancel(NOTIFICATION_ID);
+            }
             stopSelf();
         }
 
@@ -862,23 +874,19 @@ import android.net.NetworkRequest;
             handler.post(() -> {
                 // Release old player synchronously (we're already on the handler thread)
                 if (player != null) {
-                    Log.d("RemoteStreamerService", "releasing player before new play");
                     stopUpdatingTime();
                     player.release();
                     player = null;
-                    audioManager.abandonAudioFocusRequest(focusRequest);
                 }
 
                 player = new ExoPlayer.Builder(this).build();
-                player.setWakeMode(C.WAKE_MODE_NETWORK);
-                player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource;
                 if (url.contains(".m3u8")) {
                     mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
                             .createMediaSource(MediaItem.fromUri(url));
                     this.isLiveStream = true;
-                    setDuration(-1); // -1 signals live/unknown duration to Android Auto (hides timeline)
+                    setDuration(0);
                     setPosition(0);
                 } else {
                     mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
@@ -890,80 +898,47 @@ import android.net.NetworkRequest;
                 player.prepare();
 
                 setupPlayerListeners();
-                updatePossibleActions(); // refresh actions (seek available for on-demand, not for live)
 
                 int focusResult = audioManager.requestAudioFocus(focusRequest);
                 if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
                     player.play();
                 }
-                Log.d("stream", "playing");
                 setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
                 update();
-                // JS "play" event is emitted by onIsPlayingChanged when playback actually starts
+                if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
             });
         }
 
         public void pause() {
             if (player != null) {
-                Log.d("RemoteStreamerService", "pausing playback");
                 handler.post(() -> {
+                    setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
+                    update();
                     if (player != null) {
-                        setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
-                        update();
                         player.pause();
-                        // Abandon audio focus when paused by the user or system
-                        audioManager.abandonAudioFocusRequest(focusRequest);
                     }
                 });
-
-                // JS "pause" event is emitted by onIsPlayingChanged when player actually pauses
+                if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
             }
         }
 
         public void resume() {
-            handler.post(() -> {
-                // For live streams: if player is null, errored, or stalled (buffering), rebuild from scratch
-                if (isLiveStream && currentUrl != null) {
-                    boolean needsRebuild = (player == null)
-                            || (player.getPlayerError() != null)
-                            || (player.getPlaybackState() == Player.STATE_BUFFERING)
-                            || (player.getPlaybackState() == Player.STATE_IDLE);
-                    if (needsRebuild) {
-                        Log.d(TAG, "resume() on stalled/failed live stream, rebuilding player");
-                        cancelReconnect();
-                        reconnectAttempts = 0;
-                        isReconnecting = true;
-                        performReconnect(currentUrl);
-                        return;
-                    }
-                }
-                // For on-demand: if player is null, errored, or stalled, rebuild and seek to saved position
-                if (!isLiveStream && currentUrl != null) {
-                    boolean needsRebuild = (player == null)
-                            || (player.getPlayerError() != null)
-                            || (player.getPlaybackState() == Player.STATE_BUFFERING && wasPlayingBeforeStall)
-                            || (player.getPlaybackState() == Player.STATE_IDLE);
-                    if (needsRebuild) {
-                        Log.d(TAG, "resume() on stalled/failed on-demand, rebuilding at position " + savedPosition + "ms");
-                        performOnDemandResume();
-                        return;
-                    }
-                }
-                if (player != null) {
-                    Log.d("RemoteStreamerService", "resuming playback");
-                    int focusResult = audioManager.requestAudioFocus(focusRequest);
-                    if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                        if (isLiveStream) {
-                            // if a live stream is paused and resumed, catch up to live
-                            player.seekToDefaultPosition();
+            if (player != null) {
+                int focusResult = audioManager.requestAudioFocus(focusRequest);
+                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    handler.post(() -> {
+                        if (player != null) {
+                            if (isLiveStream) {
+                                player.seekToDefaultPosition();
+                            }
+                            player.play();
                         }
-                        player.play();
-                        setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
-                        update();
-                        // JS "play" event is emitted by onIsPlayingChanged when playback actually starts
-                    }
+                    });
+                    setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
+                    update();
+                    if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
                 }
-            });
+            }
         }
 
         public void seekTo(Long position) {
@@ -1028,27 +1003,13 @@ import android.net.NetworkRequest;
                     switch (state) {
                         case Player.STATE_BUFFERING:
                             if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", true));
-                            // Save position for on-demand recovery
-                            if (!isLiveStream && player != null) {
-                                long pos = player.getCurrentPosition();
-                                if (pos > 0) savedPosition = pos;
-                            }
-                            // Start stall watchdog (but not if already reconnecting)
-                            if (!isReconnecting) startStallWatchdog();
                             break;
                         case Player.STATE_READY:
-                            // Playback recovered — reset reconnect state
-                            cancelStallWatchdog();
-                            reconnectAttempts = 0;
-                            isReconnecting = false;
-                            wasPlayingBeforeStall = false;
                             if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", false));
                             if (!isLiveStream) startUpdatingTime();
                             break;
                         case Player.STATE_ENDED:
-                            cancelStallWatchdog();
                             stopUpdatingTime();
-                            savedPosition = 0; // reset so next play starts from beginning
                             stop(true);
                             break;
                     }
@@ -1059,47 +1020,21 @@ import android.net.NetworkRequest;
                     if (isPlaying) {
                         if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
                     } else {
-                        if (!isReconnecting && plugin != null) {
-                            plugin.onPlayerEvent("pause", new JSObject());
-                        }
+                        if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
                     }
                 }
 
                 @Override
                 public void onPlayerError(PlaybackException error) {
-                    Log.e(TAG, "Player error: " + error.getMessage() + " (code=" + error.errorCode + ")", error);
-
+                    if (error.getCause() != null && error.getCause().getClass().equals(java.net.ConnectException.class)) {
+                        pause();
+                    }
                     if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
-                        // Recoverable: just seek back to live edge
                         player.seekToDefaultPosition();
                         player.prepare();
                         player.play();
-                        return;
                     }
-
                     if (plugin != null) plugin.onPlayerEvent("error", new JSObject().put("message", error.getMessage()));
-
-                    // For live streams, attempt reconnection
-                    if (isLiveStream && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                        reconnect();
-                    } else if (!isLiveStream) {
-                        // On-demand: save position, pause state, wait for network/user action
-                        if (player != null) {
-                            long pos = player.getCurrentPosition();
-                            if (pos > 0) savedPosition = pos;
-                        }
-                        wasPlayingBeforeStall = true;
-                        isReconnecting = false;
-                        setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
-                        update();
-                        Log.d(TAG, "On-demand error: saved position=" + savedPosition + "ms, waiting for network");
-                    } else {
-                        // Live exhausted retries — stop
-                        isReconnecting = false;
-                        setPlaybackState(PlaybackStateCompat.STATE_ERROR);
-                        update();
-                        if (plugin != null) plugin.onPlayerEvent("stop", new JSObject().put("ended", false));
-                    }
                 }
             });
         }
@@ -1146,7 +1081,6 @@ import android.net.NetworkRequest;
                 }
 
                 player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
-                player.setWakeMode(C.WAKE_MODE_NETWORK);
                 player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
@@ -1177,7 +1111,6 @@ import android.net.NetworkRequest;
                 }
 
                 player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
-                player.setWakeMode(C.WAKE_MODE_NETWORK);
                 player.setAudioAttributes(this.playerAudioAttributes, false);
 
                 MediaSource mediaSource;
@@ -1190,20 +1123,18 @@ import android.net.NetworkRequest;
                 }
 
                 player.setMediaSource(mediaSource);
-                player.prepare();
                 setupPlayerListeners();
+                player.prepare();
 
                 if (savedPosition > 0) {
                     player.seekTo(savedPosition);
                 }
 
                 int focusResult = audioManager.requestAudioFocus(focusRequest);
-                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                    player.play();
-                    setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
-                    update();
-                    // JS "play" event is emitted by onIsPlayingChanged when playback actually starts
-                }
+                player.play();
+                setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
+                update();
+                if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
 
                 wasPlayingBeforeStall = false;
                 isReconnecting = false;
@@ -1301,17 +1232,9 @@ import android.net.NetworkRequest;
             updateTimeTask = new Runnable() {
                 @Override
                 public void run() {
-                    if (player == null || player.getPlaybackState() == Player.STATE_ENDED) {
-                        // Player gone or finished — stop updating
-                        return;
-                    }
-                    if (player.isPlaying()) {
+                    if (player != null && player.isPlaying()) {
                         long currentTime = player.getCurrentPosition();
                         long duration = player.getDuration();
-                        // Clamp position to duration to prevent showing time past end
-                        if (duration != C.TIME_UNSET && duration > 0 && currentTime > duration) {
-                            currentTime = duration;
-                        }
                         setDuration(duration);
                         setPosition(currentTime);
                         update();
@@ -1337,42 +1260,28 @@ import android.net.NetworkRequest;
 
         @Override
         public void onAudioFocusChange(int focusChange) {
-            // This is called on the main looper, so no need to post to handler.
-            if (player == null && focusChange != AudioManager.AUDIOFOCUS_GAIN) {
+            if (player == null) {
                 return;
             }
-            switch (focusChange) {
-                case AudioManager.AUDIOFOCUS_GAIN:
-                    Log.d(TAG, "onAudioFocusChange: AUDIOFOCUS_GAIN");
-                    // We have regained focus.
-                    // If we were ducking, return to full volume.
-                    if (player != null) player.setVolume(1.0f);
-                    // If we were paused for a transient loss, resume playback.
-                    if (resumeOnFocusLossTransient) {
-                        resumeOnFocusLossTransient = false;
-                        resume(); // Use the service's resume method for consistency
-                    }
-                    break;
-                case AudioManager.AUDIOFOCUS_LOSS:
-                    Log.d(TAG, "onAudioFocusChange: AUDIOFOCUS_LOSS (permanent)");
-                    // Permanent loss of focus. The user must manually resume playback.
-                    resumeOnFocusLossTransient = false;
-                    pause();
-                    break;
-                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                    Log.d(TAG, "onAudioFocusChange: AUDIOFOCUS_LOSS_TRANSIENT");
-                    // Temporary loss of focus. Pause playback and set a flag to resume.
-                    if (player != null && player.isPlaying()) {
-                        resumeOnFocusLossTransient = true;
-                        player.pause(); // Just pause the player directly, don't abandon focus
-                    }
-                    break;
-                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                    Log.d(TAG, "onAudioFocusChange: AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK");
-                    // We can keep playing, but at a lower volume ("ducking").
-                    if (player != null) player.setVolume(0.1f);
-                    break;
-            }
+
+            handler.post(() -> {
+                switch (focusChange) {
+                    case AudioManager.AUDIOFOCUS_GAIN:
+                        player.setVolume(1.0f);
+                        if (resumeOnFocusLossTransient) {
+                            player.play();
+                        }
+                        break;
+                    case AudioManager.AUDIOFOCUS_LOSS:
+                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                        resumeOnFocusLossTransient = player.isPlaying();
+                        player.pause();
+                        break;
+                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                        player.setVolume(0.1f);
+                        break;
+                }
+            });
         }
 
         public void setVolume(float volume) {

@@ -53,11 +53,9 @@ public class RemoteStreamerPlugin extends Plugin {
             RemoteStreamerService.LocalBinder binder = (RemoteStreamerService.LocalBinder) iBinder;
             service = binder.getService();
             if (foregroundInitialized) {
-                // Full foreground init (startForegroundService was called)
                 Intent intent = new Intent(getActivity(), getActivity().getClass());
                 service.connectAndInitialize(RemoteStreamerPlugin.this, intent);
             } else {
-                // Lightweight connection for event forwarding only
                 service.connectPlugin(RemoteStreamerPlugin.this);
             }
         }
@@ -72,11 +70,6 @@ public class RemoteStreamerPlugin extends Plugin {
     @Override
     public void load() {
         super.load();
-
-        // Bind to the media service immediately so Android Auto events
-        // can reach the JS layer even before the first play() call.
-        // Use bindService only (not startForegroundService) to avoid showing
-        // a notification before playback starts.
         Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
         getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
@@ -85,7 +78,6 @@ public class RemoteStreamerPlugin extends Plugin {
         foregroundInitialized = true;
         Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
         ContextCompat.startForegroundService(getContext(), intent);
-        // If already bound, upgrade to full foreground initialization
         if (service != null) {
             Intent activityIntent = new Intent(getActivity(), getActivity().getClass());
             service.connectAndInitialize(RemoteStreamerPlugin.this, activityIntent);
@@ -147,8 +139,6 @@ public class RemoteStreamerPlugin extends Plugin {
         }
 
         if (service == null) {
-            // Wait for service to connect? Ideally we should queue the command or wait.
-            // The original code waited with sleep loop.
             int retries = 0;
             while (service == null && retries < 20) {
                 try {
@@ -161,7 +151,7 @@ public class RemoteStreamerPlugin extends Plugin {
         }
 
         if (service != null) {
-            service.setCurrentMediaId(null); // Clear Auto mediaId since app is initiating playback
+            service.setCurrentMediaId(null);
             service.play(url);
             call.resolve();
         } else {
@@ -236,12 +226,29 @@ public class RemoteStreamerPlugin extends Plugin {
         String artist = call.getString("artist", "");
         String album = call.getString("album", "");
         String artwork = call.getString("imageUrl", "");
+        
+        long durationMs = -1;
+        try {
+            if (call.hasOption("duration")) {
+                Object durationObj = call.getData().get("duration");
+                if (durationObj instanceof Number) {
+                    durationMs = (long) (((Number) durationObj).doubleValue() * 1000);
+                } else if (durationObj instanceof String) {
+                    try {
+                        durationMs = (long) (Double.parseDouble((String) durationObj) * 1000);
+                    } catch (NumberFormatException e) {
+                        Log.e("streamer", "Failed to parse duration string: " + durationObj);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
 
         if (service != null) {
             service.setTitle(title);
             service.setArtist(artist);
             service.setAlbum(album);
             service.setArtwork(getImage(artwork));
+            if (durationMs > 0) service.setDuration(durationMs);
             service.update();
         } else {
             call.reject("Service is not initialized");
@@ -290,7 +297,6 @@ public class RemoteStreamerPlugin extends Plugin {
             state.put("duration", dur > 0 ? dur / 1000.0 : 0);
             state.put("isLiveStream", service.isLiveStream());
             state.put("currentMediaId", service.getCurrentMediaId());
-            // Include cached metadata so the app can display correct info
             String mediaId = service.getCurrentMediaId();
             if (mediaId != null) {
                 String[] meta = service.getMetadataForMediaId(mediaId);
