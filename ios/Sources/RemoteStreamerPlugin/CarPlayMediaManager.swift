@@ -5,6 +5,9 @@ import MediaPlayer
 @available(iOS 14.0, *)
 public class CarPlayMediaManager: NSObject {
 
+    /// Toggle for CarPlay experience. Set to `true` via plugin config to enable.
+    public static var isEnabled: Bool = false
+
     public static let shared = CarPlayMediaManager()
 
     // Legacy: media items set from JS (kept for backward compatibility)
@@ -86,6 +89,7 @@ public class CarPlayMediaManager: NSObject {
 
     /// Build and set the root tab bar template with 4 tabs
     public func setupRootTemplate() {
+        guard CarPlayMediaManager.isEnabled else { return }
         guard let controller = interfaceController else { return }
 
         // Create tab templates — start with loading placeholders, then populate async

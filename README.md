@@ -9,6 +9,24 @@ npm install mp3-hls-streaming
 npx cap sync
 ```
 
+## Configuration
+
+### CarPlay & Android Auto
+
+The CarPlay (iOS) and Android Auto browse experiences are **disabled by default**. To enable them, add the following to your `capacitor.config.json` (or `capacitor.config.ts`):
+
+```json
+{
+  "plugins": {
+    "RemoteStreamer": {
+      "carExperienceEnabled": true
+    }
+  }
+}
+```
+
+Set to `false` (or remove the key) to disable.
+
 ## API
 
 <docgen-index>

@@ -12,6 +12,7 @@ public class PluginCarPlaySceneDelegate: UIResponder, CPTemplateApplicationScene
     private var interfaceController: CPInterfaceController?
 
     @objc public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didConnect interfaceController: CPInterfaceController) {
+        guard CarPlayMediaManager.isEnabled else { return }
         self.interfaceController = interfaceController
         CarPlayMediaManager.shared.interfaceController = interfaceController
         NotificationCenter.default.post(name: Notification.Name("CarPlayDidConnect"), object: interfaceController)

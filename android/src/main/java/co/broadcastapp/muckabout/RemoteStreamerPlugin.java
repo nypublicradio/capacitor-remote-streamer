@@ -70,6 +70,8 @@ public class RemoteStreamerPlugin extends Plugin {
     @Override
     public void load() {
         super.load();
+        boolean carEnabled = getConfig().getBoolean("carExperienceEnabled", false);
+        RemoteStreamerService.carExperienceEnabled = carEnabled;
         Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
         getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
     }

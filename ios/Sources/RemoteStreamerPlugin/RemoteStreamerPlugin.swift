@@ -30,9 +30,13 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleCarPlayPlayRequest), name: Notification.Name("CarPlayPlayRequest"), object: nil)
 
-        // Initialize CarPlayMediaManager early so it can receive CarPlay connection notifications
+        // Initialize CarPlayMediaManager if car experience is enabled via plugin config
         if #available(iOS 14.0, *) {
-            _ = CarPlayMediaManager.shared
+            let carEnabled = getConfig().getBoolean("carExperienceEnabled", false)
+            CarPlayMediaManager.isEnabled = carEnabled
+            if carEnabled {
+                _ = CarPlayMediaManager.shared
+            }
         }
     }
 

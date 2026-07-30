@@ -69,6 +69,10 @@ import android.net.NetworkRequest;
 
     public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
         private static final String TAG = "RemoteStreamerService";
+
+        /** Toggle for Android Auto browse experience. Set via plugin config. */
+        static volatile boolean carExperienceEnabled = false;
+
         private static final String EXTRA_CONTENT_STYLE_BROWSABLE_HINT = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT";
         private static final String EXTRA_CONTENT_STYLE_PLAYABLE_HINT = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT";
         private static final int CONTENT_STYLE_LIST_ITEM = 1;
@@ -151,6 +155,9 @@ import android.net.NetworkRequest;
 
         @Override
         public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
+            if (!carExperienceEnabled) {
+                return null;
+            }
             Bundle extras = new Bundle();
             extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
             extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
@@ -507,6 +514,7 @@ import android.net.NetworkRequest;
             mediaSession.setMetadata(mediaMetadataBuilder.build());
 
             // Prepare default content (WNYC newscast) so Android Auto doesn't show a spinner
+            if (carExperienceEnabled) {
             executor.execute(() -> {
                 List<BffApiClient.NewsItem> news = bffApiClient.fetchLatestNews();
                 if (!news.isEmpty()) {
@@ -526,6 +534,7 @@ import android.net.NetworkRequest;
                     });
                 }
             });
+            }
             
             String versionName = "1.0"; // Default version
             String deviceModel = android.os.Build.MODEL;
