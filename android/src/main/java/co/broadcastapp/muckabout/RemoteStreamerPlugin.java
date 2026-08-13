@@ -290,40 +290,42 @@ public class RemoteStreamerPlugin extends Plugin {
 
     @PluginMethod
     public void getCurrentState(PluginCall call) {
-        JSObject state = new JSObject();
-        if (service != null) {
-            state.put("isPlaying", service.isCurrentlyPlaying());
-            state.put("currentUrl", service.getCurrentUrl());
-            state.put("currentTime", service.getCurrentPosition() / 1000.0);
-            long dur = service.getDuration();
-            state.put("duration", dur > 0 ? dur / 1000.0 : 0);
-            state.put("isLiveStream", service.isLiveStream());
-            state.put("currentMediaId", service.getCurrentMediaId());
-            String mediaId = service.getCurrentMediaId();
-            if (mediaId != null) {
-                String[] meta = service.getMetadataForMediaId(mediaId);
-                if (meta != null) {
-                    state.put("title", meta[0]);
-                    state.put("artist", meta[1]);
-                    state.put("imageUrl", meta[2]);
-                    if (meta.length > 3) {
-                        try { state.put("duration", Integer.parseInt(meta[3])); } catch (NumberFormatException ignored) {}
+        new Handler(Looper.getMainLooper()).post(() -> {
+            JSObject state = new JSObject();
+            if (service != null) {
+                state.put("isPlaying", service.isCurrentlyPlaying());
+                state.put("currentUrl", service.getCurrentUrl());
+                state.put("currentTime", service.getCurrentPosition() / 1000.0);
+                long dur = service.getDuration();
+                state.put("duration", dur > 0 ? dur / 1000.0 : 0);
+                state.put("isLiveStream", service.isLiveStream());
+                state.put("currentMediaId", service.getCurrentMediaId());
+                String mediaId = service.getCurrentMediaId();
+                if (mediaId != null) {
+                    String[] meta = service.getMetadataForMediaId(mediaId);
+                    if (meta != null) {
+                        state.put("title", meta[0]);
+                        state.put("artist", meta[1]);
+                        state.put("imageUrl", meta[2]);
+                        if (meta.length > 3) {
+                            try { state.put("duration", Integer.parseInt(meta[3])); } catch (NumberFormatException ignored) {}
+                        }
+                    }
+                    String streamUrl = service.getStreamUrlForMediaId(mediaId);
+                    if (streamUrl != null) {
+                        state.put("streamUrl", streamUrl);
                     }
                 }
-                String streamUrl = service.getStreamUrlForMediaId(mediaId);
-                if (streamUrl != null) {
-                    state.put("streamUrl", streamUrl);
-                }
+            } else {
+                state.put("isPlaying", false);
+                state.put("currentUrl", null);
+                state.put("currentTime", 0);
+                state.put("duration", 0);
+                state.put("isLiveStream", false);
+                state.put("currentMediaId", null);
             }
-        } else {
-            state.put("isPlaying", false);
-            state.put("currentUrl", null);
-            state.put("currentTime", 0);
-            state.put("duration", 0);
-            state.put("isLiveStream", false);
-            state.put("currentMediaId", null);
-        }
-        call.resolve(state);
+            call.resolve(state);
+        });
     }
 
 
