@@ -13,7 +13,7 @@ export interface RemoteStreamerPlugin {
   setMediaItems (options: { items: CarMediaItem[] }): Promise<void>
   getCurrentState (): Promise<PlayerState>
   addListener (
-    eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId',
+    eventName: 'play' | 'pause' | 'stop' | 'ready' | 'timeUpdate' | 'buffering' | 'error' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId',
     listenerFunc: (data: RemoteStreamerEventData) => void
   ): Promise<PluginListenerHandle>
   removeAllListeners (): Promise<void>
@@ -31,6 +31,7 @@ export type RemoteStreamerEventData =
   | PlayEvent
   | PauseEvent
   | StopEvent
+  | ReadyEvent
   | TimeUpdateEvent
   | BufferingEvent
   | ErrorEvent
@@ -50,9 +51,17 @@ export interface StopEvent {
   type: 'stop'
 }
 
+export interface ReadyEvent {
+  type: 'ready'
+  duration: number
+  currentTime: number
+  isLiveStream: boolean
+}
+
 export interface TimeUpdateEvent {
   type: 'timeUpdate'
   currentTime: number
+  duration: number
 }
 
 export interface BufferingEvent {

@@ -7,6 +7,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
   private audio: HTMLAudioElement | null = null
   private intervalId: number | null = null
   private hls: Hls | null = null
+  private hasFiredReady = false
 
   async setNowPlayingInfo (options: {
     title: string
@@ -29,6 +30,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     }
     this.audio = new Audio()
     this.audio.id = "pluginAudioElement" // Assigning an ID to the audio element
+    this.hasFiredReady = false
     this.setupEventListeners() // Call setupEventListeners here
 
     const urlWithoutParams = options.url.split("?")[0]
@@ -107,7 +109,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     this.stopTimeUpdates()
     this.intervalId = window.setInterval(() => {
       if (this.audio) {
-        this.notifyListeners("timeUpdate", { currentTime: this.audio.currentTime })
+        this.notifyListeners("timeUpdate", { currentTime: this.audio.currentTime, duration: this.audio.duration || 0 })
       }
     }, 1000)
   }
@@ -161,8 +163,17 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
         this.notifyListeners("error", { message: `Audio error: ${e}` })
       this.audio.onwaiting = () =>
         this.notifyListeners("buffering", { isBuffering: true })
-      this.audio.oncanplaythrough = () =>
+      this.audio.oncanplaythrough = () => {
         this.notifyListeners("buffering", { isBuffering: false })
+        if (!this.hasFiredReady) {
+          this.hasFiredReady = true
+          this.notifyListeners("ready", {
+            duration: this.audio?.duration || 0,
+            currentTime: this.audio?.currentTime || 0,
+            isLiveStream: false,
+          })
+        }
+      }
     }
   }
 }

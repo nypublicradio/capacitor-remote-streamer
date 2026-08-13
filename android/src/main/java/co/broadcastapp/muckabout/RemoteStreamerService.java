@@ -1016,6 +1016,14 @@ import android.net.NetworkRequest;
                         case Player.STATE_READY:
                             if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", false));
                             if (!isLiveStream) startUpdatingTime();
+                            {
+                                long dur = player.getDuration();
+                                JSObject readyData = new JSObject()
+                                        .put("duration", (dur != C.TIME_UNSET && dur > 0) ? dur / 1000.0 : 0)
+                                        .put("currentTime", player.getCurrentPosition() / 1000.0)
+                                        .put("isLiveStream", isLiveStream);
+                                if (plugin != null) plugin.onPlayerEvent("ready", readyData);
+                            }
                             break;
                         case Player.STATE_ENDED:
                             stopUpdatingTime();
@@ -1244,7 +1252,9 @@ import android.net.NetworkRequest;
                     if (player != null && player.isPlaying()) {
                         long currentTime = player.getCurrentPosition();
                         long duration = player.getDuration();
-                        setDuration(duration);
+                        if (duration != C.TIME_UNSET && duration > 0 && RemoteStreamerService.this.duration <= 0) {
+                            setDuration(duration);
+                        }
                         setPosition(currentTime);
                         update();
                         JSObject timeData = new JSObject()
@@ -1302,6 +1312,10 @@ import android.net.NetworkRequest;
         }
 
         public long getCurrentPosition() {
+            if (player != null) {
+                long pos = player.getCurrentPosition();
+                if (pos > 0) return pos;
+            }
             return position;
         }
     }

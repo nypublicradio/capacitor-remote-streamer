@@ -28,6 +28,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleEndedEvent), name: Notification.Name("RemoteStreamerEnded"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleReadyEvent), name: Notification.Name("RemoteStreamerReady"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleCarPlayPlayRequest), name: Notification.Name("CarPlayPlayRequest"), object: nil)
 
         // Initialize CarPlayMediaManager if car experience is enabled via plugin config
@@ -70,10 +71,28 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         notifyListeners("buffering", data: nil)
     }
 
+    @objc func handleReadyEvent(notification: Notification) {
+        if let userInfo = notification.userInfo {
+            let duration = userInfo["duration"] as? Double ?? 0
+            let currentTime = userInfo["currentTime"] as? Double ?? 0
+            let isLiveStream = userInfo["isLiveStream"] as? Bool ?? false
+            notifyListeners("ready", data: [
+                "duration": duration,
+                "currentTime": currentTime,
+                "isLiveStream": isLiveStream
+            ])
+        }
+    }
+
     @objc func handleTimeUpdateEvent(notification: Notification) {
         if let userInfo = notification.userInfo, let currentTime = userInfo["currentTime"] as? Double {
-            notifyListeners("timeUpdate", data: ["currentTime": currentTime])
-            // Now Playing elapsed time is updated directly by RemoteStreamer.notifyTimeUpdate
+            var data: [String: Any] = ["currentTime": currentTime]
+            if let duration = userInfo["duration"] as? Double, duration > 0 {
+                data["duration"] = duration
+            } else {
+                data["duration"] = 0
+            }
+            notifyListeners("timeUpdate", data: data)
         }
     }
 

@@ -28,6 +28,7 @@ class RemoteStreamer: NSObject {
     private var stallWatchdog: DispatchWorkItem?
     private let stallTimeoutSeconds: Double = 30.0
     private var savedPosition: Double = 0 // saved playback position for on-demand recovery
+    private var hasFiredReady = false // track whether 'ready' event has been fired for current play
 
     // Network monitoring
     private var pathMonitor: NWPathMonitor?
@@ -59,6 +60,7 @@ class RemoteStreamer: NSObject {
 
         currentUrl = url
         isLiveStream = url.contains(".m3u8")
+        hasFiredReady = false
 
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
         let osVersion = UIDevice.current.systemVersion
@@ -487,6 +489,20 @@ class RemoteStreamer: NSObject {
                 self.wasPlayingBeforeStall = false
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPlay"), object: nil)
+                    if !self.hasFiredReady {
+                        self.hasFiredReady = true
+                        let duration = self.player?.currentItem?.duration.seconds ?? 0
+                        let currentTime = self.player?.currentTime().seconds ?? 0
+                        NotificationCenter.default.post(
+                            name: Notification.Name("RemoteStreamerReady"),
+                            object: nil,
+                            userInfo: [
+                                "duration": (duration.isFinite && duration > 0) ? duration : 0,
+                                "currentTime": currentTime.isFinite ? currentTime : 0,
+                                "isLiveStream": self.isLiveStream
+                            ]
+                        )
+                    }
                 }
             case .waitingToPlayAtSpecifiedRate:
                 DispatchQueue.main.async {
