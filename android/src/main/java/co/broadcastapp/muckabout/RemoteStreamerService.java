@@ -993,6 +993,7 @@ import android.net.NetworkRequest;
 
         public void releasePlayer() {
             if (player != null) {
+                if (plugin != null) plugin.onPlayerEvent("stop", new JSObject());
                 handler.post(() -> {
                     Log.d("RemoteStreamerService", "releasing player");
                     stopUpdatingTime();
@@ -1037,7 +1038,10 @@ import android.net.NetworkRequest;
                     if (isPlaying) {
                         if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
                     } else {
-                        if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
+                        // Don't fire pause during buffering — it's a transient state, not a user action
+                        if (player != null && player.getPlaybackState() != Player.STATE_BUFFERING) {
+                            if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
+                        }
                     }
                 }
 
