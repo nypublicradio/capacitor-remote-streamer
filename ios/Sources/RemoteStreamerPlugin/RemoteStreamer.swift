@@ -14,6 +14,7 @@ class RemoteStreamer: NSObject {
     private var playbackLikelyToKeepUpObserver: NSKeyValueObservation?
     private var playerTimeControlStatusObserver: NSKeyValueObservation?
     private var playerStatusObserver: NSKeyValueObservation?
+    private var durationObserver: NSKeyValueObservation?
 
     // Reconnection state
     private var currentUrl: String?
@@ -469,6 +470,26 @@ class RemoteStreamer: NSObject {
             }
         }
 
+        durationObserver = playerItem.observe(\.duration, options: [.new]) { [weak self] item, _ in
+            guard let self = self else { return }
+            let duration = item.duration.seconds
+            if duration.isFinite && duration > 0 && !self.hasFiredReady {
+                self.hasFiredReady = true
+                let currentTime = self.player?.currentTime().seconds ?? 0
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: Notification.Name("RemoteStreamerReady"),
+                        object: nil,
+                        userInfo: [
+                            "duration": duration,
+                            "currentTime": currentTime.isFinite ? currentTime : 0,
+                            "isLiveStream": self.isLiveStream
+                        ]
+                    )
+                }
+            }
+        }
+
         playerTimeControlStatusObserver = player?.observe(\.timeControlStatus, options: [.new]) { [weak self] player, change in
             guard let self = self else { return }
             switch player.timeControlStatus {
@@ -489,20 +510,6 @@ class RemoteStreamer: NSObject {
                 self.wasPlayingBeforeStall = false
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPlay"), object: nil)
-                    if !self.hasFiredReady {
-                        self.hasFiredReady = true
-                        let duration = self.player?.currentItem?.duration.seconds ?? 0
-                        let currentTime = self.player?.currentTime().seconds ?? 0
-                        NotificationCenter.default.post(
-                            name: Notification.Name("RemoteStreamerReady"),
-                            object: nil,
-                            userInfo: [
-                                "duration": (duration.isFinite && duration > 0) ? duration : 0,
-                                "currentTime": currentTime.isFinite ? currentTime : 0,
-                                "isLiveStream": self.isLiveStream
-                            ]
-                        )
-                    }
                 }
             case .waitingToPlayAtSpecifiedRate:
                 DispatchQueue.main.async {
@@ -560,6 +567,7 @@ class RemoteStreamer: NSObject {
         playbackLikelyToKeepUpObserver?.invalidate()
         playerTimeControlStatusObserver?.invalidate()
         playerStatusObserver?.invalidate()
+        durationObserver?.invalidate()
         removeTimeObserver()
     }
     
