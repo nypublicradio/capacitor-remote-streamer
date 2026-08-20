@@ -35,6 +35,9 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         if #available(iOS 14.0, *) {
             let carEnabled = getConfig().getBoolean("carExperienceEnabled", false)
             CarPlayMediaManager.isEnabled = carEnabled
+            if let bffBaseUrl = getConfig().getString("bffBaseUrl") {
+                BffApiClient.shared.setBaseUrl(bffBaseUrl)
+            }
             if carEnabled {
                 _ = CarPlayMediaManager.shared
             }

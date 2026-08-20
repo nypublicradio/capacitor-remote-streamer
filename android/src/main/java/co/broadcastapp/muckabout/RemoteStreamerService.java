@@ -73,6 +73,9 @@ import android.net.NetworkRequest;
         /** Toggle for Android Auto browse experience. Set via plugin config. */
         static volatile boolean carExperienceEnabled = false;
 
+        /** BFF API base URL override. Set via plugin config, defaults to BffApiClient's built-in value. */
+        static volatile String bffBaseUrl = null;
+
         private static final String EXTRA_CONTENT_STYLE_BROWSABLE_HINT = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT";
         private static final String EXTRA_CONTENT_STYLE_PLAYABLE_HINT = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT";
         private static final int CONTENT_STYLE_LIST_ITEM = 1;
@@ -492,6 +495,9 @@ import android.net.NetworkRequest;
             audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             executor = Executors.newSingleThreadExecutor();
             bffApiClient = new BffApiClient();
+            if (bffBaseUrl != null && !bffBaseUrl.isEmpty()) {
+                bffApiClient.setBaseUrl(bffBaseUrl);
+            }
             setupNetworkCallback();
 
             // Initialize MediaSession immediately so Android Auto can connect
