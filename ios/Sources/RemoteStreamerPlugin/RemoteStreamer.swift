@@ -508,6 +508,26 @@ class RemoteStreamer: NSObject {
                 self.reconnectAttempts = 0
                 self.isReconnecting = false
                 self.wasPlayingBeforeStall = false
+
+                // For live streams, AVPlayerItem.duration is indefinite (NaN) so the
+                // durationObserver will never fire.  Emit the 'ready' event here once
+                // playback actually starts so the JS layer exits its loading state.
+                if !self.hasFiredReady {
+                    self.hasFiredReady = true
+                    let currentTime = self.player?.currentTime().seconds ?? 0
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(
+                            name: Notification.Name("RemoteStreamerReady"),
+                            object: nil,
+                            userInfo: [
+                                "duration": 0.0,
+                                "currentTime": currentTime.isFinite ? currentTime : 0,
+                                "isLiveStream": self.isLiveStream
+                            ]
+                        )
+                    }
+                }
+
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPlay"), object: nil)
                 }
