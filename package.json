@@ -69,6 +69,9 @@
       "src": "android"
     }
   },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
   "dependencies": {
     "hls.js": "^1.5.20"
   }
