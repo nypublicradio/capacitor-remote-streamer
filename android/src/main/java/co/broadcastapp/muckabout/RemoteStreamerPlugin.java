@@ -72,6 +72,7 @@ public class RemoteStreamerPlugin extends Plugin {
         super.load();
         boolean carEnabled = getConfig().getBoolean("carExperienceEnabled", false);
         RemoteStreamerService.carExperienceEnabled = carEnabled;
+        RemoteStreamerService.bffBaseUrl = getConfig().getString("bffBaseUrl");
         Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
         getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
     }

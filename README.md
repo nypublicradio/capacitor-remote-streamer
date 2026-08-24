@@ -27,6 +27,22 @@ The CarPlay (iOS) and Android Auto browse experiences are **disabled by default*
 
 Set to `false` (or remove the key) to disable.
 
+### BFF API base URL
+
+CarPlay and Android Auto browse trees are populated from the WNYC BFF API, which defaults to `https://wnyc.org`. To point at a different host, add `bffBaseUrl` to your `capacitor.config.json`:
+
+```json
+{
+  "plugins": {
+    "RemoteStreamer": {
+      "bffBaseUrl": "https://staging.wnyc.org"
+    }
+  }
+}
+```
+
+Omit the key to use the default.
+
 ## API
 
 <docgen-index>
