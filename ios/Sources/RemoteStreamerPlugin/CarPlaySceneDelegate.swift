@@ -1,44 +1,27 @@
 import Foundation
 import CarPlay
 
+/// Fallback CarPlay scene delegate provided by the plugin.
+/// For apps that use this plugin, it's recommended to create a CarPlaySceneDelegate
+/// in the main app target instead (see README), since iOS requires the delegate
+/// class to be in the main binary for reliable scene instantiation.
 @available(iOS 14.0, *)
-public class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
+@objc(PluginCarPlaySceneDelegate)
+public class PluginCarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
 
     private var interfaceController: CPInterfaceController?
-    private var listTemplate: CPListTemplate?
 
-    public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didConnect interfaceController: CPInterfaceController) {
+    @objc public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didConnect interfaceController: CPInterfaceController) {
+        guard CarPlayMediaManager.isEnabled else { return }
         self.interfaceController = interfaceController
-
-        // Post notification so the plugin knows CarPlay connected
+        CarPlayMediaManager.shared.interfaceController = interfaceController
         NotificationCenter.default.post(name: Notification.Name("CarPlayDidConnect"), object: interfaceController)
-
-        // If media items were already set, build the template
-        if let items = CarPlayMediaManager.shared.mediaItems, !items.isEmpty {
-            let template = CarPlayMediaManager.shared.buildListTemplate()
-            self.listTemplate = template
-            interfaceController.setRootTemplate(template, animated: true, completion: nil)
-        } else {
-            // Show an empty template that will be updated when items arrive
-            let template = CPListTemplate(title: "Live", sections: [])
-            self.listTemplate = template
-            interfaceController.setRootTemplate(template, animated: true, completion: nil)
-        }
-
-        // Listen for template updates
-        NotificationCenter.default.addObserver(self, selector: #selector(handleTemplateUpdate), name: Notification.Name("CarPlayTemplateUpdate"), object: nil)
+        CarPlayMediaManager.shared.setupRootTemplate()
     }
 
-    public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didDisconnect interfaceController: CPInterfaceController) {
+    @objc public func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didDisconnect interfaceController: CPInterfaceController) {
         self.interfaceController = nil
-        NotificationCenter.default.removeObserver(self, name: Notification.Name("CarPlayTemplateUpdate"), object: nil)
+        CarPlayMediaManager.shared.interfaceController = nil
         NotificationCenter.default.post(name: Notification.Name("CarPlayDidDisconnect"), object: nil)
-    }
-
-    @objc private func handleTemplateUpdate() {
-        guard let controller = interfaceController else { return }
-        let template = CarPlayMediaManager.shared.buildListTemplate()
-        self.listTemplate = template
-        controller.setRootTemplate(template, animated: true, completion: nil)
     }
 }

@@ -9,6 +9,40 @@ npm install mp3-hls-streaming
 npx cap sync
 ```
 
+## Configuration
+
+### CarPlay & Android Auto
+
+The CarPlay (iOS) and Android Auto browse experiences are **disabled by default**. To enable them, add the following to your `capacitor.config.json` (or `capacitor.config.ts`):
+
+```json
+{
+  "plugins": {
+    "RemoteStreamer": {
+      "carExperienceEnabled": true
+    }
+  }
+}
+```
+
+Set to `false` (or remove the key) to disable.
+
+### BFF API base URL
+
+CarPlay and Android Auto browse trees are populated from the WNYC BFF API, which defaults to `https://wnyc.org`. To point at a different host, add `bffBaseUrl` to your `capacitor.config.json`:
+
+```json
+{
+  "plugins": {
+    "RemoteStreamer": {
+      "bffBaseUrl": "https://staging.wnyc.org"
+    }
+  }
+}
+```
+
+Omit the key to use the default.
+
 ## API
 
 <docgen-index>
@@ -23,7 +57,8 @@ npx cap sync
 * [`setNowPlayingInfo(...)`](#setnowplayinginfo)
 * [`releasePlayer()`](#releaseplayer)
 * [`setMediaItems(...)`](#setmediaitems)
-* [`addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId', ...)`](#addlistenererror--play--pause--stop--timeupdate--buffering--id3metadata--playfromcarplay--playfrommediaid-)
+* [`getCurrentState()`](#getcurrentstate)
+* [`addListener('error' | 'play' | 'pause' | 'stop' | 'ready' | 'timeUpdate' | 'buffering' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId', ...)`](#addlistenererror--play--pause--stop--ready--timeupdate--buffering--id3metadata--playfromcarplay--playfrommediaid-)
 * [`removeAllListeners()`](#removealllisteners)
 * [Interfaces](#interfaces)
 * [Type Aliases](#type-aliases)
@@ -147,16 +182,27 @@ setMediaItems(options: { items: CarMediaItem[]; }) => Promise<void>
 --------------------
 
 
-### addListener('error' | 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId', ...)
+### getCurrentState()
 
 ```typescript
-addListener(eventName: 'play' | 'pause' | 'stop' | 'timeUpdate' | 'buffering' | 'error' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId', listenerFunc: (data: RemoteStreamerEventData) => void) => Promise<PluginListenerHandle>
+getCurrentState() => Promise<PlayerState>
 ```
 
-| Param              | Type                                                                                                                                          |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`eventName`**    | <code>'error' \| 'play' \| 'pause' \| 'stop' \| 'timeUpdate' \| 'buffering' \| 'id3Metadata' \| 'playFromCarPlay' \| 'playFromMediaId'</code> |
-| **`listenerFunc`** | <code>(data: <a href="#remotestreamereventdata">RemoteStreamerEventData</a>) =&gt; void</code>                                                |
+**Returns:** <code>Promise&lt;<a href="#playerstate">PlayerState</a>&gt;</code>
+
+--------------------
+
+
+### addListener('error' | 'play' | 'pause' | 'stop' | 'ready' | 'timeUpdate' | 'buffering' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId', ...)
+
+```typescript
+addListener(eventName: 'play' | 'pause' | 'stop' | 'ready' | 'timeUpdate' | 'buffering' | 'error' | 'id3Metadata' | 'playFromCarPlay' | 'playFromMediaId', listenerFunc: (data: RemoteStreamerEventData) => void) => Promise<PluginListenerHandle>
+```
+
+| Param              | Type                                                                                                                                                     |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`eventName`**    | <code>'error' \| 'play' \| 'pause' \| 'stop' \| 'ready' \| 'timeUpdate' \| 'buffering' \| 'id3Metadata' \| 'playFromCarPlay' \| 'playFromMediaId'</code> |
+| **`listenerFunc`** | <code>(data: <a href="#remotestreamereventdata">RemoteStreamerEventData</a>) =&gt; void</code>                                                           |
 
 **Returns:** <code>Promise&lt;<a href="#pluginlistenerhandle">PluginListenerHandle</a>&gt;</code>
 
@@ -184,6 +230,18 @@ removeAllListeners() => Promise<void>
 | **`artist`**    | <code>string</code> |
 | **`imageUrl`**  | <code>string</code> |
 | **`streamUrl`** | <code>string</code> |
+
+
+#### PlayerState
+
+| Prop                 | Type                        |
+| -------------------- | --------------------------- |
+| **`isPlaying`**      | <code>boolean</code>        |
+| **`currentUrl`**     | <code>string \| null</code> |
+| **`currentTime`**    | <code>number</code>         |
+| **`duration`**       | <code>number</code>         |
+| **`isLiveStream`**   | <code>boolean</code>        |
+| **`currentMediaId`** | <code>string \| null</code> |
 
 
 #### PluginListenerHandle
@@ -214,12 +272,23 @@ removeAllListeners() => Promise<void>
 | **`type`** | <code>'stop'</code> |
 
 
+#### ReadyEvent
+
+| Prop               | Type                 |
+| ------------------ | -------------------- |
+| **`type`**         | <code>'ready'</code> |
+| **`duration`**     | <code>number</code>  |
+| **`currentTime`**  | <code>number</code>  |
+| **`isLiveStream`** | <code>boolean</code> |
+
+
 #### TimeUpdateEvent
 
 | Prop              | Type                      |
 | ----------------- | ------------------------- |
 | **`type`**        | <code>'timeUpdate'</code> |
 | **`currentTime`** | <code>number</code>       |
+| **`duration`**    | <code>number</code>       |
 
 
 #### BufferingEvent
@@ -267,6 +336,6 @@ removeAllListeners() => Promise<void>
 
 #### RemoteStreamerEventData
 
-<code><a href="#playevent">PlayEvent</a> | <a href="#pauseevent">PauseEvent</a> | <a href="#stopevent">StopEvent</a> | <a href="#timeupdateevent">TimeUpdateEvent</a> | <a href="#bufferingevent">BufferingEvent</a> | <a href="#errorevent">ErrorEvent</a> | <a href="#id3metadataevent">ID3MetadataEvent</a> | <a href="#playfromcarplayevent">PlayFromCarPlayEvent</a> | <a href="#playfrommediaidevent">PlayFromMediaIdEvent</a></code>
+<code><a href="#playevent">PlayEvent</a> | <a href="#pauseevent">PauseEvent</a> | <a href="#stopevent">StopEvent</a> | <a href="#readyevent">ReadyEvent</a> | <a href="#timeupdateevent">TimeUpdateEvent</a> | <a href="#bufferingevent">BufferingEvent</a> | <a href="#errorevent">ErrorEvent</a> | <a href="#id3metadataevent">ID3MetadataEvent</a> | <a href="#playfromcarplayevent">PlayFromCarPlayEvent</a> | <a href="#playfrommediaidevent">PlayFromMediaIdEvent</a></code>
 
 </docgen-api>

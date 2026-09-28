@@ -45,14 +45,19 @@ import java.util.List;
 public class RemoteStreamerPlugin extends Plugin {
     private boolean isLiveStream = false;
     private RemoteStreamerService service = null;
+    private boolean foregroundInitialized = false;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
             RemoteStreamerService.LocalBinder binder = (RemoteStreamerService.LocalBinder) iBinder;
             service = binder.getService();
-            Intent intent = new Intent(getActivity(), getActivity().getClass());
-            service.connectAndInitialize(RemoteStreamerPlugin.this, intent);
+            if (foregroundInitialized) {
+                Intent intent = new Intent(getActivity(), getActivity().getClass());
+                service.connectAndInitialize(RemoteStreamerPlugin.this, intent);
+            } else {
+                service.connectPlugin(RemoteStreamerPlugin.this);
+            }
         }
 
         @Override
@@ -65,12 +70,23 @@ public class RemoteStreamerPlugin extends Plugin {
     @Override
     public void load() {
         super.load();
+        boolean carEnabled = getConfig().getBoolean("carExperienceEnabled", false);
+        RemoteStreamerService.carExperienceEnabled = carEnabled;
+        RemoteStreamerService.bffBaseUrl = getConfig().getString("bffBaseUrl");
+        Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
+        getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
 
     public void startMediaService() {
+        foregroundInitialized = true;
         Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
         ContextCompat.startForegroundService(getContext(), intent);
-        getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+        if (service != null) {
+            Intent activityIntent = new Intent(getActivity(), getActivity().getClass());
+            service.connectAndInitialize(RemoteStreamerPlugin.this, activityIntent);
+        } else {
+            getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+        }
     }
 
 
@@ -121,10 +137,11 @@ public class RemoteStreamerPlugin extends Plugin {
             return;
         }
 
-        if (service == null) {
+        if (!foregroundInitialized) {
             startMediaService();
-            // Wait for service to connect? Ideally we should queue the command or wait.
-            // The original code waited with sleep loop.
+        }
+
+        if (service == null) {
             int retries = 0;
             while (service == null && retries < 20) {
                 try {
@@ -137,6 +154,7 @@ public class RemoteStreamerPlugin extends Plugin {
         }
 
         if (service != null) {
+            service.setCurrentMediaId(null);
             service.play(url);
             call.resolve();
         } else {
@@ -211,12 +229,29 @@ public class RemoteStreamerPlugin extends Plugin {
         String artist = call.getString("artist", "");
         String album = call.getString("album", "");
         String artwork = call.getString("imageUrl", "");
+        
+        long durationMs = -1;
+        try {
+            if (call.hasOption("duration")) {
+                Object durationObj = call.getData().get("duration");
+                if (durationObj instanceof Number) {
+                    durationMs = (long) (((Number) durationObj).doubleValue() * 1000);
+                } else if (durationObj instanceof String) {
+                    try {
+                        durationMs = (long) (Double.parseDouble((String) durationObj) * 1000);
+                    } catch (NumberFormatException e) {
+                        Log.e("streamer", "Failed to parse duration string: " + durationObj);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
 
         if (service != null) {
             service.setTitle(title);
             service.setArtist(artist);
             service.setAlbum(album);
             service.setArtwork(getImage(artwork));
+            if (durationMs > 0) service.setDuration(durationMs);
             service.update();
         } else {
             call.reject("Service is not initialized");
@@ -252,6 +287,46 @@ public class RemoteStreamerPlugin extends Plugin {
         if (service != null) {
             service.releasePlayer();
         }
+    }
+
+    @PluginMethod
+    public void getCurrentState(PluginCall call) {
+        new Handler(Looper.getMainLooper()).post(() -> {
+            JSObject state = new JSObject();
+            if (service != null) {
+                state.put("isPlaying", service.isCurrentlyPlaying());
+                state.put("currentUrl", service.getCurrentUrl());
+                state.put("currentTime", service.getCurrentPosition() / 1000.0);
+                long dur = service.getDuration();
+                state.put("duration", dur > 0 ? dur / 1000.0 : 0);
+                state.put("isLiveStream", service.isLiveStream());
+                state.put("currentMediaId", service.getCurrentMediaId());
+                String mediaId = service.getCurrentMediaId();
+                if (mediaId != null) {
+                    String[] meta = service.getMetadataForMediaId(mediaId);
+                    if (meta != null) {
+                        state.put("title", meta[0]);
+                        state.put("artist", meta[1]);
+                        state.put("imageUrl", meta[2]);
+                        if (meta.length > 3) {
+                            try { state.put("duration", Integer.parseInt(meta[3])); } catch (NumberFormatException ignored) {}
+                        }
+                    }
+                    String streamUrl = service.getStreamUrlForMediaId(mediaId);
+                    if (streamUrl != null) {
+                        state.put("streamUrl", streamUrl);
+                    }
+                }
+            } else {
+                state.put("isPlaying", false);
+                state.put("currentUrl", null);
+                state.put("currentTime", 0);
+                state.put("duration", 0);
+                state.put("isLiveStream", false);
+                state.put("currentMediaId", null);
+            }
+            call.resolve(state);
+        });
     }
 
 
