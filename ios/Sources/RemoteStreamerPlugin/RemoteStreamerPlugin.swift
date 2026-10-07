@@ -15,10 +15,11 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setNowPlayingInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "releasePlayer", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setMediaItems", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "setMediaItems", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getCurrentState", returnType: CAPPluginReturnPromise)
     ]
     
-    private let implementation = RemoteStreamer()
+    private var implementation: RemoteStreamer { RemoteStreamer.shared }
 
     override public func load() {
         NotificationCenter.default.addObserver(self, selector: #selector(handlePlayEvent), name: Notification.Name("RemoteStreamerPlay"), object: nil)
@@ -27,20 +28,42 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleEndedEvent), name: Notification.Name("RemoteStreamerEnded"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleTimeUpdateEvent), name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleReadyEvent), name: Notification.Name("RemoteStreamerReady"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleCarPlayPlayRequest), name: Notification.Name("CarPlayPlayRequest"), object: nil)
-        setupRemoteTransportControls()
+
+        // Initialize CarPlayMediaManager if car experience is enabled via plugin config
+        if #available(iOS 14.0, *) {
+            let carEnabled = getConfig().getBoolean("carExperienceEnabled", false)
+            CarPlayMediaManager.isEnabled = carEnabled
+            if let bffBaseUrl = getConfig().getString("bffBaseUrl") {
+                BffApiClient.shared.setBaseUrl(bffBaseUrl)
+            }
+            if carEnabled {
+                _ = CarPlayMediaManager.shared
+            }
+        }
     }
 
     @objc func handlePlayEvent() {
         notifyListeners("play", data: nil)
+        MPNowPlayingInfoCenter.default().playbackState = .playing
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     @objc func handlePauseEvent() {
         notifyListeners("pause", data: nil)
+        MPNowPlayingInfoCenter.default().playbackState = .paused
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     @objc func handleStopEvent() {
             notifyListeners("stop", data: nil)
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     @objc func handleEndedEvent() {
@@ -51,13 +74,29 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         notifyListeners("buffering", data: nil)
     }
 
+    @objc func handleReadyEvent(notification: Notification) {
+        if let userInfo = notification.userInfo {
+            let duration = userInfo["duration"] as? Double ?? 0
+            let currentTime = userInfo["currentTime"] as? Double ?? 0
+            let isLiveStream = userInfo["isLiveStream"] as? Bool ?? false
+            notifyListeners("ready", data: [
+                "duration": duration,
+                "currentTime": currentTime,
+                "isLiveStream": isLiveStream
+            ])
+        }
+    }
+
     @objc func handleTimeUpdateEvent(notification: Notification) {
         if let userInfo = notification.userInfo, let currentTime = userInfo["currentTime"] as? Double {
-            notifyListeners("timeUpdate", data: ["currentTime": currentTime])
-            MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+            var data: [String: Any] = ["currentTime": currentTime]
+            if let duration = userInfo["duration"] as? Double, duration > 0 {
+                data["duration"] = duration
+            } else {
+                data["duration"] = 0
+            }
+            notifyListeners("timeUpdate", data: data)
         }
-
-
     }
 
     @objc func setMediaItems(_ call: CAPPluginCall) {
@@ -73,28 +112,21 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func handleCarPlayPlayRequest(notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let streamUrl = userInfo["streamUrl"] as? String else { return }
+        guard let userInfo = notification.userInfo else { return }
 
-        // Enable command center controls for CarPlay-initiated playback
-        enableRemoteTransportControls()
+        // CarPlayMediaManager already started playback and set Now Playing info.
+        // This handler notifies the JS layer with full metadata so the app UI can update.
+        var data: [String: Any] = [
+            "id": userInfo["id"] as? String ?? "",
+            "isLive": userInfo["isLive"] as? Bool ?? false,
+            "streamUrl": userInfo["streamUrl"] as? String ?? ""
+        ]
+        if let title = userInfo["title"] as? String { data["title"] = title }
+        if let artist = userInfo["artist"] as? String { data["artist"] = artist }
+        if let imageUrl = userInfo["imageUrl"] as? String { data["imageUrl"] = imageUrl }
+        if let duration = userInfo["duration"] as? Int { data["duration"] = duration }
 
-        implementation.play(url: streamUrl) { _ in }
-
-        // Update now playing info from stored media item data
-        if #available(iOS 14.0, *) {
-            if let items = CarPlayMediaManager.shared.mediaItems,
-               let itemId = userInfo["id"] as? String,
-               let matchingItem = items.first(where: { ($0["id"] as? String) == itemId }) {
-                let title = matchingItem["title"] as? String ?? ""
-                let artist = matchingItem["artist"] as? String ?? ""
-                let imageUrlString = matchingItem["imageUrl"] as? String ?? ""
-                updateNowPlayingInfo(title: title, artist: artist, album: "", duration: "0", imageURL: URL(string: imageUrlString), isLiveStream: true)
-            }
-        }
-
-        let itemId = userInfo["id"] as? String ?? ""
-        notifyListeners("playFromCarPlay", data: ["id": itemId])
+        notifyListeners("playFromCarPlay", data: data)
     }
 
     @objc func play(_ call: CAPPluginCall) {
@@ -112,6 +144,9 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         } else {
             disableRemoteTransportControls()
         }
+
+        // Clear CarPlay mediaId since app is initiating playback
+        implementation.currentMediaId = nil
         
         implementation.play(url: url) { result in
             print("play")
@@ -175,16 +210,26 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         call.resolve()
     }
 
-    func updateNowPlayingInfo(title: String, artist: String, album: String, duration: String ,imageURL: URL?, isLiveStream: Bool) {
-        var nowPlayingInfo = [String: Any]()
+    func updateNowPlayingInfo(title: String, artist: String, album: String, duration: String, imageURL: URL?, isLiveStream: Bool) {
+        var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
         nowPlayingInfo[MPMediaItemPropertyTitle] = title
         nowPlayingInfo[MPMediaItemPropertyArtist] = artist
         nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
-        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
         nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = isLiveStream
-        
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+
+        // Set duration as a Double (required for the timeline to appear)
+        // NEVER set duration to 0 — that disables the interactive scrubber
+        if let durationValue = Double(duration), durationValue > 0 {
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = durationValue
+        }
+        // If duration is unknown, omit it — handleTimeUpdateEvent will fill it from the player
+
+        // Set now playing info immediately (without artwork) so controls appear
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+
+        // Load artwork asynchronously and update
         if let imageURL = imageURL {
-            // Load the image from the URL asynchronously
             DispatchQueue.global(qos: .userInitiated).async {
                 if let imageData = try? Data(contentsOf: imageURL),
                    let image = UIImage(data: imageData) {
@@ -192,83 +237,26 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
                         return image
                     }
                     DispatchQueue.main.async {
-                        nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
-                        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+                        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                        info[MPMediaItemPropertyArtwork] = artwork
+                        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
                     }
                 }
             }
-        } else {
-            // Update nowPlayingInfo without artwork
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
         }
     }
     
+    @objc func getCurrentState(_ call: CAPPluginCall) {
+        let state = implementation.getCurrentState()
+        call.resolve(state as [String: Any])
+    }
+
     func disableRemoteTransportControls() {
-        let commandCenter = MPRemoteCommandCenter.shared()
-        commandCenter.playCommand.isEnabled = false
-        commandCenter.pauseCommand.isEnabled = false
-        commandCenter.togglePlayPauseCommand.isEnabled = false
-        commandCenter.changePlaybackPositionCommand.isEnabled = false
-        commandCenter.skipForwardCommand.isEnabled = false
-        commandCenter.skipBackwardCommand.isEnabled = false
+        implementation.disableCommandCenter()
     }
 
     func enableRemoteTransportControls(enableSeek: Bool = false) {
-        let commandCenter = MPRemoteCommandCenter.shared()
-        commandCenter.playCommand.isEnabled = true
-        commandCenter.pauseCommand.isEnabled = true
-        commandCenter.togglePlayPauseCommand.isEnabled = true
-        commandCenter.changePlaybackPositionCommand.isEnabled = true
-        if (enableSeek) {
-            commandCenter.skipForwardCommand.isEnabled = true
-            commandCenter.skipBackwardCommand.isEnabled = true
-        } else {
-            commandCenter.skipForwardCommand.isEnabled = false
-            commandCenter.skipBackwardCommand.isEnabled = false
-        }
-    }
-    
-    func setupRemoteTransportControls() {
-        let commandCenter = MPRemoteCommandCenter.shared()
-        
-        // Play command
-        commandCenter.playCommand.addTarget { event in
-            self.implementation.resume()
-            return .success
-        }
-        
-        // Pause command
-        commandCenter.pauseCommand.addTarget { event in
-            self.implementation.pause()
-            return .success
-        }
-
-        // toggle play/pause command
-        commandCenter.togglePlayPauseCommand.addTarget { event in
-            if self.implementation.isPlaying() {
-                self.implementation.pause()
-            } else {
-                self.implementation.resume()
-            }
-            return .success
-        }
-
-        commandCenter.skipForwardCommand.addTarget { event in
-            self.implementation.seekBy(offset: 10)
-            return .success
-        }
-
-        commandCenter.skipBackwardCommand.addTarget { event in
-            self.implementation.seekBy(offset: -10)
-            return .success
-        }
-
-        commandCenter.changePlaybackPositionCommand.addTarget { event in
-            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            let newTime = event.positionTime
-            self.implementation.seekTo(position: newTime)
-            return .success
-        }
+        implementation.enableCommandCenter(seekEnabled: enableSeek)
     }
 
 }
