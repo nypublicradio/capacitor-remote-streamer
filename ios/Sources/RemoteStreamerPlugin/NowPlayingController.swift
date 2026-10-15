@@ -12,6 +12,10 @@ final class NowPlayingController {
     /// earlier item is discarded.
     private var artworkRequestId = UUID()
 
+    /// The artwork URL currently shown (or loading), so an update can tell
+    /// whether the picture changed.
+    private var artworkUrl: String?
+
     enum PlaybackState {
         case playing, paused, stopped
     }
@@ -24,6 +28,7 @@ final class NowPlayingController {
             info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
             MPNowPlayingInfoCenter.default().playbackState = .playing
+            self.artworkUrl = nil
             self.loadArtwork(for: item)
         }
     }
@@ -33,8 +38,16 @@ final class NowPlayingController {
         onMain {
             var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             self.apply(item, defaultTitle: defaultTitle, to: &info)
+            let artworkChanged = item.artworkUrl != self.artworkUrl
+            if artworkChanged {
+                // Don't leave the previous item's picture up while the new one loads
+                // (or when the new item has none)
+                info.removeValue(forKey: MPMediaItemPropertyArtwork)
+            }
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-            self.loadArtwork(for: item)
+            if artworkChanged {
+                self.loadArtwork(for: item)
+            }
         }
     }
 
@@ -52,6 +65,7 @@ final class NowPlayingController {
                 center.playbackState = .stopped
                 center.nowPlayingInfo = nil
                 self.artworkRequestId = UUID()
+                self.artworkUrl = nil
             }
         }
     }
@@ -86,7 +100,8 @@ final class NowPlayingController {
     }
 
     private func setRate(_ rate: Double) {
-        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        // Nothing shown (e.g. just stopped): don't bring the info back
+        guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
         info[MPNowPlayingInfoPropertyPlaybackRate] = rate
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
@@ -94,6 +109,7 @@ final class NowPlayingController {
     private func loadArtwork(for item: PlayableItem) {
         let requestId = UUID()
         artworkRequestId = requestId
+        artworkUrl = item.artworkUrl
         guard let urlString = item.artworkUrl, let url = URL(string: urlString) else { return }
 
         DispatchQueue.global(qos: .userInitiated).async {
