@@ -1,21 +1,14 @@
 package co.broadcastapp.muckabout;
 
-import static java.util.Set.of;
-
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.media.AudioAttributes;
-import android.media.AudioFocusRequest;
-import android.media.AudioManager;
-import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-
 import android.util.Log;
 
 import androidx.core.content.ContextCompat;
@@ -25,25 +18,17 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import java.util.Set;
-import java.util.stream.Stream;
 import org.json.JSONException;
 import java.io.IOException;
-import java.net.URL;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
-import java.io.InputStream;
+import java.net.URL;
 
-import android.support.v4.media.MediaBrowserCompat;
-import android.support.v4.media.MediaDescriptionCompat;
-import android.net.Uri;
-import org.json.JSONArray;
-import java.util.ArrayList;
-import java.util.List;
+import co.broadcastapp.muckabout.library.PlayableItem;
 
 @CapacitorPlugin(name = "RemoteStreamer")
 public class RemoteStreamerPlugin extends Plugin {
-    private boolean isLiveStream = false;
     private RemoteStreamerService service = null;
     private boolean foregroundInitialized = false;
 
@@ -70,9 +55,6 @@ public class RemoteStreamerPlugin extends Plugin {
     @Override
     public void load() {
         super.load();
-        boolean carEnabled = getConfig().getBoolean("carExperienceEnabled", false);
-        RemoteStreamerService.carExperienceEnabled = carEnabled;
-        RemoteStreamerService.bffBaseUrl = getConfig().getString("bffBaseUrl");
         Intent intent = new Intent(getActivity(), RemoteStreamerService.class);
         getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
@@ -86,46 +68,6 @@ public class RemoteStreamerPlugin extends Plugin {
             service.connectAndInitialize(RemoteStreamerPlugin.this, activityIntent);
         } else {
             getContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
-        }
-    }
-
-
-    @PluginMethod
-    public void setMediaItems(PluginCall call) {
-        JSONArray items = call.getArray("items");
-        if (items == null) {
-            call.reject("items array is required");
-            return;
-        }
-
-        if (service != null) {
-            List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
-            for (int i = 0; i < items.length(); i++) {
-                try {
-                    JSObject item = JSObject.fromJSONObject(items.getJSONObject(i));
-                    String id = item.getString("id");
-                    String title = item.getString("title");
-                    String artist = item.getString("artist");
-                    String imageUrl = item.getString("imageUrl");
-                    String streamUrl = item.getString("streamUrl");
-
-                    MediaDescriptionCompat description = new MediaDescriptionCompat.Builder()
-                            .setMediaId(id)
-                            .setTitle(title)
-                            .setSubtitle(artist)
-                            .setIconUri(Uri.parse(imageUrl))
-                            .setMediaUri(Uri.parse(streamUrl))
-                            .build();
-
-                    mediaItems.add(new MediaBrowserCompat.MediaItem(description, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE));
-                } catch (JSONException e) {
-                    Log.e("streamer", "Error parsing media item at index " + i, e);
-                }
-            }
-            service.setMediaItems(mediaItems);
-            call.resolve();
-        } else {
-            call.reject("Service not initialized");
         }
     }
 
@@ -154,7 +96,6 @@ public class RemoteStreamerPlugin extends Plugin {
         }
 
         if (service != null) {
-            service.setCurrentMediaId(null);
             service.play(url);
             call.resolve();
         } else {
@@ -162,30 +103,20 @@ public class RemoteStreamerPlugin extends Plugin {
         }
     }
 
-
-
     @PluginMethod
     public void pause(PluginCall call) {
-        pause();
-        call.resolve();
-    }
-
-    private void pause() {
         if (service != null) {
             service.pause();
         }
+        call.resolve();
     }
 
     @PluginMethod
     public void resume(PluginCall call) {
-        resume();
-        call.resolve();
-    }
-
-    private void resume() {
         if (service != null) {
             service.resume();
         }
+        call.resolve();
     }
 
     @PluginMethod
@@ -197,39 +128,27 @@ public class RemoteStreamerPlugin extends Plugin {
             call.reject("Can't parse position " + call.getData().toString());
             return;
         }
-        seekTo(position);
-        call.resolve();
-    }
-
-    private void seekTo(Long position) {
         if (service != null) {
             service.seekTo(position);
         }
+        call.resolve();
     }
 
     @PluginMethod
     public void stop(PluginCall call) {
-        stop();
+        if (service != null) {
+            service.stop(false);
+        }
         call.resolve();
     }
 
-    public void stop() {
-        stop(false);
-    }
-
-    public void stop(final boolean ended) {
-        if (service != null) {
-            service.stop(ended);
-        }
-    }
-
     @PluginMethod
-    public void setNowPlayingInfo(PluginCall call) throws JSONException, IOException {
-        String title = call.getData().getString("title", "WNYC");
+    public void setNowPlayingInfo(PluginCall call) {
+        String title = call.getString("title", "");
         String artist = call.getString("artist", "");
         String album = call.getString("album", "");
-        String artwork = call.getString("imageUrl", "");
-        
+        String imageUrl = call.getString("imageUrl", "");
+
         long durationMs = -1;
         try {
             if (call.hasOption("duration")) {
@@ -246,18 +165,19 @@ public class RemoteStreamerPlugin extends Plugin {
             }
         } catch (Exception ignored) {}
 
-        if (service != null) {
-            service.setTitle(title);
-            service.setArtist(artist);
-            service.setAlbum(album);
-            service.setArtwork(getImage(artwork));
-            if (durationMs > 0) service.setDuration(durationMs);
-            service.update();
-        } else {
+        if (service == null) {
             call.reject("Service is not initialized");
             return;
         }
 
+        service.setNowPlayingMetadata(
+            title != null ? title : "",
+            artist != null ? artist : "",
+            album != null ? album : "",
+            imageUrl == null || imageUrl.isEmpty() ? null : imageUrl,
+            imageUrl == null || imageUrl.isEmpty() ? null : getImage(imageUrl),
+            durationMs
+        );
         call.resolve();
     }
 
@@ -279,14 +199,10 @@ public class RemoteStreamerPlugin extends Plugin {
 
     @PluginMethod
     public void releasePlayer(PluginCall call) {
-        releasePlayer();
-        call.resolve();
-    }
-
-    private void releasePlayer() {
         if (service != null) {
             service.releasePlayer();
         }
+        call.resolve();
     }
 
     @PluginMethod
@@ -300,22 +216,16 @@ public class RemoteStreamerPlugin extends Plugin {
                 long dur = service.getDuration();
                 state.put("duration", dur > 0 ? dur / 1000.0 : 0);
                 state.put("isLiveStream", service.isLiveStream());
-                state.put("currentMediaId", service.getCurrentMediaId());
-                String mediaId = service.getCurrentMediaId();
-                if (mediaId != null) {
-                    String[] meta = service.getMetadataForMediaId(mediaId);
-                    if (meta != null) {
-                        state.put("title", meta[0]);
-                        state.put("artist", meta[1]);
-                        state.put("imageUrl", meta[2]);
-                        if (meta.length > 3) {
-                            try { state.put("duration", Integer.parseInt(meta[3])); } catch (NumberFormatException ignored) {}
-                        }
-                    }
-                    String streamUrl = service.getStreamUrlForMediaId(mediaId);
-                    if (streamUrl != null) {
-                        state.put("streamUrl", streamUrl);
-                    }
+                PlayableItem item = service.getCurrentItem();
+                state.put("currentMediaId", item != null ? item.mediaId : null);
+                // Metadata of the current item, so the app can rebuild its UI when it
+                // opens after playback was started natively (e.g. from Android Auto).
+                if (item != null) {
+                    if (dur <= 0 && item.durationSeconds > 0) state.put("duration", item.durationSeconds);
+                    if (!item.title.isEmpty()) state.put("title", item.title);
+                    if (!item.artist.isEmpty()) state.put("artist", item.artist);
+                    if (item.artworkUrl != null) state.put("imageUrl", item.artworkUrl);
+                    state.put("streamUrl", item.getReportedUrl());
                 }
             } else {
                 state.put("isPlaying", false);
@@ -329,76 +239,26 @@ public class RemoteStreamerPlugin extends Plugin {
         });
     }
 
-
-
     @Override
     protected void handleOnDestroy() {
         // Do not stop player here to allow background playback
         super.handleOnDestroy();
     }
 
-
-
     @PluginMethod
     public void setVolume(PluginCall call) {
-        Float volume;
-        try {
-            volume = (float) call.getData().getDouble("volume");
-        } catch (JSONException e) {
-            throw new RuntimeException(e);
+        Double volume = call.getDouble("volume");
+        if (volume == null) {
+            call.reject("volume is required");
+            return;
         }
         if (service != null) {
-            service.setVolume(volume);
+            service.setVolume(volume.floatValue());
         }
-    }
-
-    public void actionCallback(String action) {
-        actionCallback(action, new JSObject());
-    }
-    public void actionCallback(String action, JSObject data) {
-        Log.d("streamer", "action: " + action);
-        switch (action) {
-            case "pause":
-                pause();
-                break;
-
-            case "play":
-                resume();
-                break;
-
-            case "nexttrack":
-                if (service != null) {
-                    seekTo(service.getCurrentPosition() + 10000);
-                }
-                break;
-
-            case "previoustrack":
-                if (service != null) {
-                    seekTo(service.getCurrentPosition() - 10000);
-                }
-                break;
-
-            case "seekto":
-                try {
-                    long pos = data.getLong("seekTime");
-                    seekTo(pos);
-                } catch (JSONException e) {
-                    Log.e("streamer", "Can't parse position " + data.toString());
-                }
-                break;
-        }
+        call.resolve();
     }
 
     public void onPlayerEvent(String event, JSObject data) {
         notifyListeners(event, data);
-    }
-
-    private final Set<String> lsactions = Set.of("pause", "play");
-    private final Set<String> odactions = Set.of("pause", "play", "nexttrack", "previoustrack","seekto");
-    public boolean hasActionHandler(String actionName) {
-        if (isLiveStream) {
-            return this.lsactions.contains(actionName);
-        }
-        return this.odactions.contains(actionName);
     }
 }

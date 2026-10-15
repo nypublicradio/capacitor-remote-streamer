@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application>
+        <!-- Also a media browser service: apps that declare a MediaLibraryProvider
+             (co.broadcastapp.muckabout.MEDIA_LIBRARY_PROVIDER meta-data) can serve
+             Android Auto from it. Without a provider, browsers are refused. -->
         <service
             android:name=".RemoteStreamerService"
             android:enabled="true"
@@ -14,9 +17,6 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
-
-        <meta-data android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
 
         <receiver
             android:name="androidx.media.session.MediaButtonReceiver"
