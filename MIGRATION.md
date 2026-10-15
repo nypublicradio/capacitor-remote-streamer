@@ -20,6 +20,7 @@
 - **`getCurrentState()`** also returns `title`, `artist`, `imageUrl` and `streamUrl` for the current item.
 - **Android notification** buttons and lock-screen state no longer depend on the WebView being loaded. Live streams no longer offer a seek bar.
 - **Android `setVolume()`** now resolves its promise (it previously never settled).
+- **Android playback library** is AndroidX Media3 ExoPlayer 1.11.1 (`androidx.media3:media3-exoplayer` + `-hls`) instead of the deprecated ExoPlayer 2.18.7 (`com.google.android.exoplayer`). Behavior is unchanged. Apps can pin another Media3 version with `androidxMedia3Version` in `variables.gradle`. The unused DASH/SmoothStreaming modules are no longer pulled in.
 - **iOS module name** is `NypublicradioCapacitorRemoteStreamer` under both CocoaPods and Swift Package Manager. Package.swift's product was renamed from `Mp3HlsStreaming`, which broke SPM-based apps.
 
 ## Host app checklist

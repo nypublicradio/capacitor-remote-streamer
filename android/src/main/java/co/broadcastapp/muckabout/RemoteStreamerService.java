@@ -21,11 +21,13 @@ import android.support.v4.media.session.PlaybackStateCompat;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.OptIn;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import androidx.media.session.MediaButtonReceiver;
 import androidx.media.app.NotificationCompat.MediaStyle;
+import androidx.media3.common.util.UnstableApi;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -34,18 +36,18 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
-import com.google.android.exoplayer2.C;
-import com.google.android.exoplayer2.ExoPlayer;
-import com.google.android.exoplayer2.MediaItem;
-import com.google.android.exoplayer2.PlaybackException;
-import com.google.android.exoplayer2.Player;
-import com.google.android.exoplayer2.source.MediaSource;
-import com.google.android.exoplayer2.source.ProgressiveMediaSource;
-import com.google.android.exoplayer2.source.hls.HlsMediaSource;
-import com.google.android.exoplayer2.upstream.DefaultDataSource;
-import com.google.android.exoplayer2.upstream.DefaultHttpDataSource;
+import androidx.media3.common.C;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.exoplayer.source.MediaSource;
+import androidx.media3.exoplayer.source.ProgressiveMediaSource;
+import androidx.media3.exoplayer.hls.HlsMediaSource;
+import androidx.media3.datasource.DefaultDataSource;
+import androidx.media3.datasource.DefaultHttpDataSource;
 import android.media.AudioFocusRequest;
-import com.google.android.exoplayer2.audio.AudioAttributes;
+import androidx.media3.common.AudioAttributes;
 import android.media.AudioManager;
 import com.getcapacitor.JSObject;
 import java.net.HttpURLConnection;
@@ -72,6 +74,9 @@ import co.broadcastapp.muckabout.library.MediaLibraryProvider;
 import co.broadcastapp.muckabout.library.PlayableItem;
 import co.broadcastapp.muckabout.library.ProviderLoader;
 
+    // Media3 marks the explicit media source factories (HLS vs progressive) as
+    // unstable API; opting in keeps the same playback setup as ExoPlayer 2.
+    @OptIn(markerClass = UnstableApi.class)
     public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
         private static final String TAG = "RemoteStreamerService";
 
