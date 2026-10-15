@@ -5,10 +5,6 @@
   "plugins": {
     "SplashScreen": {
       "launchShowDuration": 0
-    },
-    "RemoteStreamer": {
-      "carExperienceEnabled": false,
-      "bffBaseUrl": "https://wnyc.org"
     }
   }
 }

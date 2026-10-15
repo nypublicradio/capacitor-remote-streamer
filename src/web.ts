@@ -1,7 +1,7 @@
 import { WebPlugin } from "@capacitor/core"
 import Hls from "hls.js"
 
-import type { RemoteStreamerPlugin, CarMediaItem, PlayerState } from "./definitions"
+import type { RemoteStreamerPlugin, PlayerState } from "./definitions"
 
 export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin {
   private audio: HTMLAudioElement | null = null
@@ -129,10 +129,6 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
 
   async releasePlayer (): Promise<void> {
     await this.stop()
-  }
-
-  async setMediaItems (options: { items: CarMediaItem[] }): Promise<void> {
-    console.log("Setting media items for car UI", options)
   }
 
   async getCurrentState (): Promise<PlayerState> {
