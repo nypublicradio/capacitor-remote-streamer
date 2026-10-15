@@ -4,8 +4,8 @@
     "type": "git",
     "url": "git://github.com/nypublicradio/capacitor-remote-streamer.git"
   },
-  "version": "1.0.0",
-  "description": "Stream remote HLS and MP3 streams on iOS and Android. Capacitor 6.",
+  "version": "2.0.0-beta.0",
+  "description": "Stream remote HLS and MP3 audio on iOS, Android and the web, with lock-screen controls and a native extension point for CarPlay/Android Auto. Capacitor 8.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
@@ -13,17 +13,18 @@
   "files": [
     "android/src/main/",
     "android/build.gradle",
+    "android/consumer-rules.pro",
     "dist/",
     "ios/Sources",
     "ios/Tests",
     "Package.swift",
-    "NypublicRadioCapacitorRemoteStreamer.podspec"
+    "NypublicradioCapacitorRemoteStreamer.podspec"
   ],
   "author": "NYPR",
   "license": "MIT",
   "scripts": {
     "verify": "npm run verify:ios && npm run verify:android && npm run verify:web",
-    "verify:ios": "xcodebuild -scheme Mp3HlsStreaming -destination generic/platform=iOS",
+    "verify:ios": "xcodebuild -scheme NypublicradioCapacitorRemoteStreamer -destination generic/platform=iOS",
     "verify:android": "cd android && ./gradlew clean build test && cd ..",
     "verify:web": "npm run build",
     "lint": "npm run eslint && npm run prettier -- --check && npm run swiftlint -- lint",
@@ -39,6 +40,7 @@
   },
   "devDependencies": {
     "@capacitor/android": "^8.5.1",
+    "@capacitor/cli": "^8.0.0",
     "@capacitor/core": "^8.5.1",
     "@capacitor/docgen": "^0.3.1",
     "@capacitor/ios": "^8.5.1",
@@ -70,10 +72,9 @@
     }
   },
   "publishConfig": {
-    "registry": "https://registry.npmjs.org/"
+    "registry": "https://npm.pkg.github.com"
   },
   "dependencies": {
-    "@capacitor/cli": "^8.0.0",
     "hls.js": "^1.5.20"
   }
 }
