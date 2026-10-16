@@ -20,43 +20,45 @@ import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.OptIn;
+import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import androidx.media.session.MediaButtonReceiver;
 import androidx.media.app.NotificationCompat.MediaStyle;
+import androidx.media3.common.util.UnstableApi;
 
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
 
-import com.google.android.exoplayer2.C;
-import com.google.android.exoplayer2.ExoPlayer;
-import com.google.android.exoplayer2.MediaItem;
-import com.google.android.exoplayer2.PlaybackException;
-import com.google.android.exoplayer2.Player;
-import com.google.android.exoplayer2.source.MediaSource;
-import com.google.android.exoplayer2.source.ProgressiveMediaSource;
-import com.google.android.exoplayer2.source.hls.HlsMediaSource;
-import com.google.android.exoplayer2.upstream.DefaultDataSource;
-import com.google.android.exoplayer2.upstream.DefaultHttpDataSource;
+import androidx.media3.common.C;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.exoplayer.source.MediaSource;
+import androidx.media3.exoplayer.source.ProgressiveMediaSource;
+import androidx.media3.exoplayer.hls.HlsMediaSource;
+import androidx.media3.datasource.DefaultDataSource;
+import androidx.media3.datasource.DefaultHttpDataSource;
 import android.media.AudioFocusRequest;
-import com.google.android.exoplayer2.audio.AudioAttributes;
+import androidx.media3.common.AudioAttributes;
 import android.media.AudioManager;
 import com.getcapacitor.JSObject;
 import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
 import java.net.URL;
-import java.io.IOException;
 import java.io.InputStream;
 import android.graphics.BitmapFactory;
 
 import androidx.media.MediaBrowserServiceCompat;
 import android.support.v4.media.MediaBrowserCompat;
 import android.support.v4.media.MediaDescriptionCompat;
+import android.net.Uri;
 import android.os.Bundle;
 import java.util.ArrayList;
 import java.util.List;
@@ -67,19 +69,28 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 
+import co.broadcastapp.muckabout.library.BrowseItem;
+import co.broadcastapp.muckabout.library.MediaLibraryProvider;
+import co.broadcastapp.muckabout.library.PlayableItem;
+import co.broadcastapp.muckabout.library.ProviderLoader;
+
+    // Media3 marks the explicit media source factories (HLS vs progressive) as
+    // unstable API; opting in keeps the same playback setup as ExoPlayer 2.
+    @OptIn(markerClass = UnstableApi.class)
     public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
         private static final String TAG = "RemoteStreamerService";
 
-        /** Toggle for Android Auto browse experience. Set via plugin config. */
-        static volatile boolean carExperienceEnabled = false;
-
-        /** BFF API base URL override. Set via plugin config, defaults to BffApiClient's built-in value. */
-        static volatile String bffBaseUrl = null;
-
         private static final String EXTRA_CONTENT_STYLE_BROWSABLE_HINT = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT";
         private static final String EXTRA_CONTENT_STYLE_PLAYABLE_HINT = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT";
+        private static final String EXTRA_SEARCH_SUPPORTED = "android.media.browse.SEARCH_SUPPORTED";
         private static final int CONTENT_STYLE_LIST_ITEM = 1;
         private static final int CONTENT_STYLE_GRID_ITEM = 2;
+
+        private static final String NOTIFICATION_CHANNEL_ID = "playback";
+
+        /** Transport actions offered in the notification, by content type. */
+        private static final Set<String> LIVE_ACTIONS = new HashSet<>(Arrays.asList("play", "pause"));
+        private static final Set<String> ON_DEMAND_ACTIONS = new HashSet<>(Arrays.asList("play", "pause", "seekbackward", "seekforward", "seekto"));
 
         private MediaSessionCompat mediaSession;
         private PlaybackStateCompat.Builder playbackStateBuilder;
@@ -90,7 +101,7 @@ import android.net.NetworkRequest;
         private final Map<String, NotificationCompat.Action> notificationActions = new HashMap<>();
         private final Map<String, Long> playbackStateActions = new HashMap<>();
         private final String[] possibleActions = {"previoustrack", "seekbackward", "play", "pause", "seekforward", "nexttrack", "seekto", "stop"};
-        final Set<String> possibleCompactViewActions = new HashSet<>(Arrays.asList("previoustrack", "play", "pause", "nexttrack", "stop", "seekto"));
+        final Set<String> possibleCompactViewActions = new HashSet<>(Arrays.asList("seekbackward", "play", "pause", "seekforward", "stop", "seekto"));
         private static final int NOTIFICATION_ID = 1;
 
         private int playbackState = PlaybackStateCompat.STATE_NONE;
@@ -118,7 +129,6 @@ import android.net.NetworkRequest;
 
         // Reconnection state
         private String currentUrl;
-        private String currentMediaId; // mediaId if playback was started from Android Auto browse tree
         private int reconnectAttempts = 0;
         private static final int MAX_RECONNECT_ATTEMPTS = 3;
         private static final long STALL_TIMEOUT_MS = 30000; // 30 seconds
@@ -131,24 +141,21 @@ import android.net.NetworkRequest;
         private AudioAttributes playerAudioAttributes;
         private ConnectivityManager.NetworkCallback networkCallback;
 
+        /** What is currently loaded, with its display metadata. */
+        private volatile PlayableItem currentItem;
+
+        /** Host-controlled branding (capacitor.config → plugins.RemoteStreamer). */
+        private PlayerSettings settings;
+
+        /** Supplies browsable content to Android Auto etc.; null when the app has none. */
+        private MediaLibraryProvider libraryProvider;
+
+        /** Background work: browse requests, item resolution, artwork downloads. */
+        private ExecutorService executor;
+
         private RemoteStreamerPlugin plugin;
 
         private final IBinder binder = new LocalBinder();
-
-        private List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
-        // Cache of mediaId -> stream URI for items served through the browse tree
-        private final Map<String, String> browseUriCache = new HashMap<>();
-        // Cache of mediaId -> metadata (title, subtitle, imageUrl) for updating MediaSession
-        private final Map<String, String[]> browseMetadataCache = new HashMap<>();
-        private static final String ROOT_ID = "root";
-        private static final String CATEGORY_LIVE = "live";
-        private static final String CATEGORY_NEWS = "news";
-        private static final String CATEGORY_TOP_STORIES = "top_stories";
-        private static final String CATEGORY_SHOWS = "shows";
-        private static final String SHOW_PREFIX = "show_";
-
-        private BffApiClient bffApiClient;
-        private ExecutorService executor;
 
         public final class LocalBinder extends Binder {
             public RemoteStreamerService getService() {
@@ -156,219 +163,226 @@ import android.net.NetworkRequest;
             }
         }
 
+        // --- Media browser (Android Auto, Assistant, ...) ---
+
         @Override
-        public BrowserRoot onGetRoot(String clientPackageName, int clientUid, Bundle rootHints) {
-            if (!carExperienceEnabled) {
+        public BrowserRoot onGetRoot(@NonNull String clientPackageName, int clientUid, @Nullable Bundle rootHints) {
+            MediaLibraryProvider provider = libraryProvider;
+            if (provider == null) {
+                return null;
+            }
+            boolean recent = rootHints != null && rootHints.getBoolean(BrowserRoot.EXTRA_RECENT);
+            String rootId;
+            try {
+                rootId = provider.getRootId(clientPackageName, recent);
+            } catch (Exception e) {
+                Log.w(TAG, "Media library provider failed in getRootId", e);
+                return null;
+            }
+            if (rootId == null) {
                 return null;
             }
             Bundle extras = new Bundle();
             extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
             extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-            return new BrowserRoot(ROOT_ID, extras);
+            if (provider.supportsSearch()) {
+                extras.putBoolean(EXTRA_SEARCH_SUPPORTED, true);
+            }
+            return new BrowserRoot(rootId, extras);
         }
 
         @Override
-        public void onLoadChildren(final String parentMediaId, final Result<List<MediaBrowserCompat.MediaItem>> result) {
+        public void onLoadChildren(@NonNull final String parentMediaId, @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result) {
+            final MediaLibraryProvider provider = libraryProvider;
+            if (provider == null) {
+                result.sendResult(new ArrayList<>());
+                return;
+            }
             // Detach so we can load asynchronously
             result.detach();
+            executor().execute(() -> {
+                List<BrowseItem> children = new ArrayList<>();
+                try {
+                    children = provider.getChildren(parentMediaId);
+                } catch (Exception e) {
+                    Log.w(TAG, "Media library provider failed to load " + parentMediaId, e);
+                }
+                result.sendResult(toMediaItems(children));
+            });
+        }
 
-            executor.execute(() -> {
-                List<MediaBrowserCompat.MediaItem> items;
-                switch (parentMediaId) {
-                    case ROOT_ID:
-                        items = buildRootMenu();
-                        break;
-                    case CATEGORY_LIVE:
-                        items = buildLiveStreams();
-                        break;
-                    case CATEGORY_NEWS:
-                        items = buildLatestNews();
-                        break;
-                    case CATEGORY_TOP_STORIES:
-                        items = buildTopStories();
-                        break;
-                    case CATEGORY_SHOWS:
-                        items = buildAllShows();
-                        break;
-                    default:
-                        if (parentMediaId.startsWith(SHOW_PREFIX)) {
-                            String showSlug = parentMediaId.substring(SHOW_PREFIX.length());
-                            if (showSlug.endsWith("_alt")) {
-                                showSlug = showSlug.substring(0, showSlug.length() - 4);
+        @Override
+        public void onSearch(@NonNull final String query, Bundle extras, @NonNull final Result<List<MediaBrowserCompat.MediaItem>> result) {
+            final MediaLibraryProvider provider = libraryProvider;
+            if (provider == null || !provider.supportsSearch()) {
+                result.sendResult(null);
+                return;
+            }
+            result.detach();
+            executor().execute(() -> {
+                List<BrowseItem> matches = new ArrayList<>();
+                try {
+                    matches = provider.search(query);
+                } catch (Exception e) {
+                    Log.w(TAG, "Media library provider failed to search for " + query, e);
+                }
+                result.sendResult(toMediaItems(matches));
+            });
+        }
+
+        private List<MediaBrowserCompat.MediaItem> toMediaItems(List<BrowseItem> items) {
+            List<MediaBrowserCompat.MediaItem> mediaItems = new ArrayList<>();
+            for (BrowseItem item : items) {
+                int style = item.displayStyle == BrowseItem.DisplayStyle.GRID ? CONTENT_STYLE_GRID_ITEM : CONTENT_STYLE_LIST_ITEM;
+                Bundle extras = new Bundle();
+                extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, style);
+                extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, style);
+                MediaDescriptionCompat.Builder description = new MediaDescriptionCompat.Builder()
+                        .setMediaId(item.id)
+                        .setTitle(item.title)
+                        .setSubtitle(item.subtitle)
+                        .setExtras(extras);
+                if (item.artworkUri != null && !item.artworkUri.trim().isEmpty()) {
+                    description.setIconUri(Uri.parse(item.artworkUri));
+                }
+                int flags = (item.browsable ? MediaBrowserCompat.MediaItem.FLAG_BROWSABLE : 0)
+                        | (item.playable ? MediaBrowserCompat.MediaItem.FLAG_PLAYABLE : 0);
+                mediaItems.add(new MediaBrowserCompat.MediaItem(description.build(), flags));
+            }
+            return mediaItems;
+        }
+
+        // --- Playback started natively (media session commands) ---
+
+        /** A media browser asked to play a browse item (e.g. a tap in Android Auto). */
+        void playFromMediaId(@NonNull final String mediaId) {
+            final MediaLibraryProvider provider = libraryProvider;
+            if (provider == null) return;
+            resolveAndPlay(() -> provider.resolve(mediaId), "media id " + mediaId);
+        }
+
+        /** Voice request, e.g. "Hey Google, play ...". An empty query means "play something". */
+        void playFromSearch(@Nullable final String query) {
+            final MediaLibraryProvider provider = libraryProvider;
+            if (provider == null) return;
+            resolveAndPlay(() -> provider.resolveSearch(query), "search '" + query + "'");
+        }
+
+        /** Play pressed (media session, headset, car). Restarts or picks a default when nothing is loaded. */
+        void playOrResume() {
+            if (player != null) {
+                resume();
+                return;
+            }
+            PlayableItem item = currentItem;
+            if (item != null) {
+                handler.post(() -> playItem(item));
+                return;
+            }
+            final MediaLibraryProvider provider = libraryProvider;
+            if (provider != null) {
+                resolveAndPlay(provider::getDefaultItem, "default item");
+            }
+        }
+
+        private void resolveAndPlay(@NonNull final Callable<PlayableItem> resolver, @NonNull final String description) {
+            executor().execute(() -> {
+                PlayableItem item = null;
+                try {
+                    item = resolver.call();
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not resolve " + description, e);
+                }
+                if (item == null) {
+                    Log.w(TAG, "Nothing to play for " + description);
+                    return;
+                }
+                final PlayableItem resolved = item;
+                handler.post(() -> playItem(resolved));
+            });
+        }
+
+        /**
+         * Plays an item started from native code (Android Auto, Assistant, a media button).
+         * Shows its metadata, keeps the service in the foreground like app-started playback
+         * and tells JS through the {@code playFromMediaId} event. Call on the main thread.
+         */
+        public void playItem(@NonNull PlayableItem item) {
+            currentItem = item;
+            startForegroundPlayback();
+            setTitle(item.title);
+            setArtist(item.artist);
+            setAlbum(item.album);
+            setArtwork(null);
+            setDuration(item.durationSeconds > 0 ? (long) (item.durationSeconds * 1000) : 0);
+            update();
+            loadArtwork(item);
+            playUrl(item.url, item.isLive);
+            if (plugin != null && item.mediaId != null) {
+                plugin.onPlayerEvent("playFromMediaId", playFromMediaIdPayload(item));
+            }
+        }
+
+        private JSObject playFromMediaIdPayload(PlayableItem item) {
+            JSObject data = new JSObject();
+            data.put("mediaId", item.mediaId);
+            data.put("id", item.mediaId);
+            data.put("isLive", item.isLive);
+            data.put("streamUrl", item.getReportedUrl());
+            data.put("title", item.title);
+            data.put("artist", item.artist);
+            if (item.artworkUrl != null) data.put("imageUrl", item.artworkUrl);
+            if (item.durationSeconds > 0) data.put("duration", item.durationSeconds);
+            return data;
+        }
+
+        private void loadArtwork(final PlayableItem item) {
+            final String imageUrl = item.artworkUrl;
+            if (imageUrl == null || imageUrl.trim().isEmpty()) return;
+            executor().execute(() -> {
+                try {
+                    HttpURLConnection conn = (HttpURLConnection) new URL(imageUrl).openConnection();
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+                    InputStream is = conn.getInputStream();
+                    Bitmap bmp = BitmapFactory.decodeStream(is);
+                    is.close();
+                    conn.disconnect();
+                    if (bmp != null) {
+                        handler.post(() -> {
+                            // Ignore artwork that arrives after a different item started
+                            if (currentItem == item) {
+                                setArtwork(bmp);
+                                update();
                             }
-                            items = buildEpisodes(showSlug);
-                        } else {
-                            items = new ArrayList<>();
-                        }
-                        break;
-                }
-                result.sendResult(items);
-            });
-        }
-
-        private List<MediaBrowserCompat.MediaItem> buildRootMenu() {
-            List<MediaBrowserCompat.MediaItem> root = new ArrayList<>();
-            root.add(makeBrowsableItem(CATEGORY_LIVE, "Live Radio", "Listen to WNYC live streams"));
-            root.add(makeBrowsableItem(CATEGORY_NEWS, "News", "NYC Headlines & NPR News Now"));
-            root.add(makeBrowsableItem(CATEGORY_TOP_STORIES, "Top Stories", "Curated stories from WNYC"));
-            // Shows menu is a list of subcategories
-            Bundle showsExtras = new Bundle();
-            showsExtras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-            showsExtras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-            MediaDescriptionCompat showsDesc = new MediaDescriptionCompat.Builder()
-                    .setMediaId(CATEGORY_SHOWS)
-                    .setTitle("Shows")
-                    .setSubtitle("Browse WNYC shows")
-                    .setExtras(showsExtras)
-                    .build();
-            root.add(new MediaBrowserCompat.MediaItem(showsDesc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
-            return root;
-        }
-
-        private List<MediaBrowserCompat.MediaItem> buildLiveStreams() {
-            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
-            List<BffApiClient.LiveStream> streams = bffApiClient.fetchLiveStreams();
-            for (BffApiClient.LiveStream stream : streams) {
-                String subtitle = stream.currentShowTitle.isEmpty() ? "Live" : stream.currentShowTitle;
-                items.add(makePlayableItem("live_" + stream.slug, stream.stationName, subtitle, stream.hlsUrl, stream.imageUrl, 0));
-            }
-            return items;
-        }
-
-        private List<MediaBrowserCompat.MediaItem> buildLatestNews() {
-            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
-            List<BffApiClient.NewsItem> news = bffApiClient.fetchLatestNews();
-            for (BffApiClient.NewsItem n : news) {
-                String subtitle = n.showTitle;
-                if (n.durationSeconds > 0) {
-                    subtitle += " | " + (n.durationSeconds / 60) + " min";
-                }
-                items.add(makePlayableItem("news_" + n.id, n.title, subtitle, n.audioUrl, n.imageUrl, n.durationSeconds));
-            }
-            return items;
-        }
-
-        private List<MediaBrowserCompat.MediaItem> buildTopStories() {
-            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
-            List<BffApiClient.StoryItem> stories = bffApiClient.fetchTopStories();
-            for (BffApiClient.StoryItem story : stories) {
-                String subtitle = story.showTitle;
-                if (story.durationSeconds > 0) {
-                    subtitle += " | " + (story.durationSeconds / 60) + " min";
-                }
-                items.add(makePlayableItem("story_" + story.id, story.title, subtitle, story.audioUrl, story.imageUrl, story.durationSeconds));
-            }
-            return items;
-        }
-
-        private List<MediaBrowserCompat.MediaItem> buildAllShows() {
-            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
-            List<BffApiClient.Show> allShows = bffApiClient.fetchAllShows();
-            
-            // Map for quick image lookup
-            Map<String, String> showImageMap = new HashMap<>();
-            for (BffApiClient.Show show : allShows) {
-                showImageMap.put(show.slug, show.imageUrl);
-            }
-
-
-            // 2. Featured Shows items
-            List<BffApiClient.Show> featuredShows = bffApiClient.fetchFeaturedShows();
-            for (BffApiClient.Show show : featuredShows) {
-                String imageUrl = showImageMap.get(show.slug);
-                if (imageUrl == null) imageUrl = show.imageUrl;
-
-                Bundle extras = new Bundle();
-                extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-                extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-                MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
-                        .setMediaId(SHOW_PREFIX + show.slug)
-                        .setTitle(show.title)
-                        .setExtras(extras)
-                        .setIconUri(resolveItemIconUri(imageUrl))
-                        .build();
-                items.add(new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
-            }
-
-
-            // 4. All Shows items (sorted)
-            List<MediaBrowserCompat.MediaItem> allItems = new ArrayList<>();
-            for (BffApiClient.Show show : allShows) {
-                Bundle extras = new Bundle();
-                extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-                extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-                MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
-                        .setMediaId(SHOW_PREFIX + show.slug)
-                        .setTitle(show.title)
-                        .setExtras(extras)
-                        .setIconUri(resolveItemIconUri(show.imageUrl))
-                        .build();
-                allItems.add(new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
-
-                if (show.title != null && show.title.toLowerCase().startsWith("the ")) {
-                    String altTitle = show.title.substring(4) + ", " + show.title.substring(0, 3);
-                    Bundle altExtras = new Bundle();
-                    altExtras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-                    altExtras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-                    MediaDescriptionCompat altDesc = new MediaDescriptionCompat.Builder()
-                            .setMediaId(SHOW_PREFIX + show.slug + "_alt")
-                            .setTitle(altTitle)
-                            .setExtras(altExtras)
-                            .setIconUri(resolveItemIconUri(show.imageUrl))
-                            .build();
-                    allItems.add(new MediaBrowserCompat.MediaItem(altDesc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
-                }
-            }
-
-            Collections.sort(allItems, new Comparator<MediaBrowserCompat.MediaItem>() {
-                @Override
-                public int compare(MediaBrowserCompat.MediaItem o1, MediaBrowserCompat.MediaItem o2) {
-                    String title1 = o1.getDescription().getTitle() != null ? o1.getDescription().getTitle().toString() : "";
-                    String title2 = o2.getDescription().getTitle() != null ? o2.getDescription().getTitle().toString() : "";
-                    return title1.compareToIgnoreCase(title2);
+                        });
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to load artwork " + imageUrl, e);
                 }
             });
-
-            items.addAll(allItems);
-
-            return items;
         }
 
-        private List<MediaBrowserCompat.MediaItem> buildEpisodes(String showSlug) {
-            List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
-            List<BffApiClient.Episode> episodes = bffApiClient.fetchEpisodes(showSlug);
-            for (BffApiClient.Episode ep : episodes) {
-                String subtitle = ep.showTitle;
-                if (ep.durationSeconds > 0) {
-                    subtitle += " | " + (ep.durationSeconds / 60) + " min";
-                }
-                items.add(makePlayableItem("episode_" + ep.id, ep.title, subtitle, ep.audioUrl, ep.imageUrl, ep.durationSeconds));
-            }
-            return items;
+        /** Updates the current item's display metadata (JS {@code setNowPlayingInfo}). */
+        public void setNowPlayingMetadata(@NonNull String title, @NonNull String artist, @NonNull String album,
+                                          @Nullable String artworkUrl, @Nullable Bitmap artwork, long durationMs) {
+            setTitle(title);
+            setArtist(artist);
+            setAlbum(album);
+            setArtwork(artwork);
+            if (durationMs > 0) setDuration(durationMs);
+            update();
+
+            PlayableItem base = currentItem != null
+                    ? currentItem
+                    : PlayableItem.fromUrl(currentUrl != null ? currentUrl : "", isLiveStream);
+            currentItem = base.withMetadata(title, artist, album, artworkUrl,
+                    durationMs > 0 ? durationMs / 1000.0 : base.durationSeconds);
         }
 
-        private MediaBrowserCompat.MediaItem makeBrowsableItem(String mediaId, String title, String subtitle) {
-            Bundle extras = makeListContentStyleExtras();
-            MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
-                    .setMediaId(mediaId)
-                    .setTitle(title)
-                    .setSubtitle(subtitle)
-                .setExtras(extras)
-                    .build();
-            return new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE);
-        }
-
-        public void setMediaItems(List<MediaBrowserCompat.MediaItem> items) {
-            this.mediaItems = items;
-            notifyChildrenChanged(ROOT_ID);
-        }
-
-        public void setCurrentMediaId(String mediaId) {
-            this.currentMediaId = mediaId;
-        }
-
-        public String getCurrentMediaId() {
-            return currentMediaId;
+        @Nullable
+        public PlayableItem getCurrentItem() {
+            return currentItem;
         }
 
         public String getCurrentUrl() {
@@ -389,103 +403,12 @@ import android.net.NetworkRequest;
             return duration;
         }
 
-        /**
-         * Returns cached browse metadata for a mediaId: [title, subtitle, imageUrl].
-         * Returns null if not found.
-         */
-        public String[] getMetadataForMediaId(String mediaId) {
-            return browseMetadataCache.get(mediaId);
-        }
-
-        public String getStreamUrlForMediaId(String mediaId) {
-            // First check manually-set media items
-            for (MediaBrowserCompat.MediaItem item : mediaItems) {
-                MediaDescriptionCompat desc = item.getDescription();
-                if (desc.getMediaId() != null && desc.getMediaId().equals(mediaId)) {
-                    if (desc.getMediaUri() != null) {
-                        return desc.getMediaUri().toString();
-                    }
-                }
+        private synchronized ExecutorService executor() {
+            // Recreated if destroy() shut it down while a media browser is still bound
+            if (executor == null || executor.isShutdown()) {
+                executor = Executors.newFixedThreadPool(3);
             }
-            // Then check the browse tree cache
-            return browseUriCache.get(mediaId);
-        }
-
-        /**
-         * Updates the MediaSession metadata from the browse cache for a given mediaId.
-         * Called when playback starts from Android Auto browse tree.
-         */
-        public void updateMetadataForMediaId(String mediaId) {
-            String[] meta = browseMetadataCache.get(mediaId);
-            if (meta != null) {
-                setTitle(meta[0]);
-                setArtist(meta[1]);
-                setAlbum("");
-                // Load artwork asynchronously if image URL is available
-                if (!meta[2].isEmpty()) {
-                    final String imageUrl = meta[2];
-                    executor.execute(() -> {
-                        try {
-                            URL url = new URL(imageUrl);
-                            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                            conn.setConnectTimeout(5000);
-                            conn.setReadTimeout(5000);
-                            InputStream is = conn.getInputStream();
-                            Bitmap bmp = BitmapFactory.decodeStream(is);
-                            is.close();
-                            conn.disconnect();
-                            if (bmp != null) {
-                                handler.post(() -> {
-                                    setArtwork(bmp);
-                                    update();
-                                });
-                            }
-                        } catch (Exception e) {
-                            Log.w(TAG, "Failed to load artwork for " + mediaId, e);
-                        }
-                    });
-                }
-                update();
-            }
-        }
-
-        private MediaBrowserCompat.MediaItem makePlayableItem(String mediaId, String title, String subtitle, String streamUrl, String imageUrl, int durationSeconds) {
-            // Cache the URI and metadata for later playback lookup
-            if (streamUrl != null && !streamUrl.isEmpty()) {
-                browseUriCache.put(mediaId, streamUrl);
-            }
-            // Strip duration from subtitle for the player view (e.g. "Show Name | 41 min" → "Show Name")
-            String playerSubtitle = subtitle != null ? subtitle.replaceAll("\\s*\\|\\s*\\d+\\s*min$", "") : "";
-            browseMetadataCache.put(mediaId, new String[]{
-                title != null ? title : "",
-                playerSubtitle,
-                imageUrl != null ? imageUrl : "",
-                String.valueOf(durationSeconds)
-            });
-            Bundle extras = makeListContentStyleExtras();
-            MediaDescriptionCompat desc = new MediaDescriptionCompat.Builder()
-                    .setMediaId(mediaId)
-                    .setTitle(title)
-                    .setSubtitle(subtitle)
-                    .setExtras(extras)
-                    .setMediaUri(streamUrl == null || streamUrl.isEmpty() ? null : android.net.Uri.parse(streamUrl))
-                    .setIconUri(resolveItemIconUri(imageUrl))
-                    .build();
-            return new MediaBrowserCompat.MediaItem(desc, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE);
-        }
-
-        private android.net.Uri resolveItemIconUri(String imageUrl) {
-            if (imageUrl != null && !imageUrl.trim().isEmpty() && !imageUrl.equals("null")) {
-                return android.net.Uri.parse(imageUrl);
-            }
-            return android.net.Uri.parse("android.resource://" + getPackageName() + "/drawable/fallback_ep");
-        }
-
-        private Bundle makeListContentStyleExtras() {
-            Bundle extras = new Bundle();
-            extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-            extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM);
-            return extras;
+            return executor;
         }
 
         @Override
@@ -493,25 +416,24 @@ import android.net.NetworkRequest;
             super.onCreate();
             handler = new Handler(Looper.getMainLooper());
             audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            executor = Executors.newSingleThreadExecutor();
-            bffApiClient = new BffApiClient();
-            if (bffBaseUrl != null && !bffBaseUrl.isEmpty()) {
-                bffApiClient.setBaseUrl(bffBaseUrl);
-            }
+            settings = PlayerSettings.load(this);
             setupNetworkCallback();
 
-            // Initialize MediaSession immediately so Android Auto can connect
-            // without waiting for the WebView plugin to bind.
-            mediaSession = new MediaSessionCompat(this, "WebViewMediaSession");
-            mediaSession.setCallback(new MediaSessionCallback(null, this));
+            // Initialize MediaSession immediately so media browsers (Android Auto) can
+            // connect without waiting for the WebView plugin to bind.
+            mediaSession = new MediaSessionCompat(this, "RemoteStreamer");
+            mediaSession.setCallback(new MediaSessionCallback(this));
             mediaSession.setActive(true);
             setSessionToken(mediaSession.getSessionToken());
 
+            libraryProvider = ProviderLoader.load(this);
+
             playbackStateBuilder = new PlaybackStateCompat.Builder()
                     .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
-                            | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID
-                            | PlaybackStateCompat.ACTION_SEEK_TO | PlaybackStateCompat.ACTION_STOP
-                            | PlaybackStateCompat.ACTION_FAST_FORWARD | PlaybackStateCompat.ACTION_REWIND)
+                            | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_SEEK_TO
+                            | PlaybackStateCompat.ACTION_STOP
+                            | PlaybackStateCompat.ACTION_FAST_FORWARD | PlaybackStateCompat.ACTION_REWIND
+                            | browseActions())
                     .setState(PlaybackStateCompat.STATE_PAUSED, 0, 1.0f);
             mediaSession.setPlaybackState(playbackStateBuilder.build());
 
@@ -519,41 +441,8 @@ import android.net.NetworkRequest;
                     .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, 0);
             mediaSession.setMetadata(mediaMetadataBuilder.build());
 
-            // Prepare default content (WNYC newscast) so Android Auto doesn't show a spinner
-            if (carExperienceEnabled) {
-            executor.execute(() -> {
-                List<BffApiClient.NewsItem> news = bffApiClient.fetchLatestNews();
-                if (!news.isEmpty()) {
-                    BffApiClient.NewsItem defaultItem = news.get(0); // WNYC local newscast
-                    String mediaId = "news_" + defaultItem.id;
-                    browseUriCache.put(mediaId, defaultItem.audioUrl);
-                    browseMetadataCache.put(mediaId, new String[]{
-                        defaultItem.title,
-                        defaultItem.showTitle,
-                        defaultItem.imageUrl,
-                        String.valueOf(defaultItem.durationSeconds)
-                    });
-                    handler.post(() -> {
-                        setTitle(defaultItem.title);
-                        setArtist(defaultItem.showTitle);
-                        update();
-                    });
-                }
-            });
-            }
-            
-            String versionName = "1.0"; // Default version
-            String deviceModel = android.os.Build.MODEL;
-            String osVersion = android.os.Build.VERSION.RELEASE;
-            try {
-                versionName = getPackageManager()
-                .getPackageInfo(getPackageName(), 0).versionName;
-            } catch (Exception e) {
-                Log.e("RemoteStreamerService", "Failed to get version name", e);
-            }
-            String userAgent = "WNYC-App/" + versionName + " (Android " + osVersion + "; " + deviceModel + ")";
             DefaultHttpDataSource.Factory httpDataSourceFactory =
-                new DefaultHttpDataSource.Factory().setUserAgent(userAgent);
+                new DefaultHttpDataSource.Factory().setUserAgent(settings.userAgent);
             dataSourceFactory = new DefaultDataSource.Factory(this, httpDataSourceFactory);
 
             this.playerAudioAttributes = new AudioAttributes.Builder()
@@ -574,6 +463,17 @@ import android.net.NetworkRequest;
                     .build();
         }
 
+        /** Actions that let media browsers start playback; always advertised when a provider exists. */
+        private long browseActions() {
+            MediaLibraryProvider provider = libraryProvider;
+            if (provider == null) return 0;
+            long actions = PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID;
+            if (provider.supportsSearch()) {
+                actions |= PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH;
+            }
+            return actions;
+        }
+
         @Override
         public IBinder onBind(Intent intent) {
             // If the intent has the MediaBrowserService action, let the superclass handle it
@@ -586,26 +486,21 @@ import android.net.NetworkRequest;
 
         @Override
         public boolean onUnbind(Intent intent) {
-            if (intent != null && "android.media.browse.MediaBrowserService".equals(intent.getAction())) {
-                // MediaBrowser client (Android Auto / system) disconnected.
-                // Do NOT null the plugin — the app activity is still alive.
-            } else {
+            if (intent == null || !"android.media.browse.MediaBrowserService".equals(intent.getAction())) {
                 // Local binder (app activity) disconnected.
                 // Clear the plugin reference to avoid sending events to a dead WebView.
+                // (A media browser disconnecting leaves the plugin alone: the app is still alive.)
                 this.plugin = null;
-                mediaSession.setCallback(new MediaSessionCallback(null, this));
             }
             return super.onUnbind(intent);
         }
 
         /**
-         * Lightweight connection: sets the plugin reference so Auto events reach JS.
+         * Lightweight connection: sets the plugin reference so native events reach JS.
          * Called on plugin load() before any playback occurs.
          */
         public void connectPlugin(RemoteStreamerPlugin plugin) {
             this.plugin = plugin;
-            // Update the callback with the plugin reference (was null during onCreate)
-            mediaSession.setCallback(new MediaSessionCallback(plugin, this));
         }
 
         /**
@@ -615,26 +510,66 @@ import android.net.NetworkRequest;
         public void connectAndInitialize(RemoteStreamerPlugin plugin, Intent intent) {
             handler.post(() -> {
                 connectPlugin(plugin);
+                buildNotification(intent);
+                startForegroundCompat();
+            });
+        }
 
-                notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    NotificationChannel channel = new NotificationChannel("playback", "Playback", NotificationManager.IMPORTANCE_LOW);
-                    notificationManager.createNotificationChannel(channel);
-                }
+        /**
+         * Promotes the service to the foreground for playback started natively, so it keeps
+         * playing (with a notification) when the app was never opened.
+         */
+        private void startForegroundPlayback() {
+            if (notificationBuilder == null) {
+                buildNotification(null);
+            }
+            try {
+                ContextCompat.startForegroundService(this, new Intent(this, RemoteStreamerService.class));
+            } catch (Exception e) {
+                Log.w(TAG, "Could not start the playback service in the foreground", e);
+            }
+            startForegroundCompat();
+        }
 
-                notificationStyle = new MediaStyle().setMediaSession(mediaSession.getSessionToken());
-                notificationBuilder = new NotificationCompat.Builder(RemoteStreamerService.this, "playback")
-                        .setStyle(notificationStyle)
-                        .setSmallIcon(R.drawable.ic_baseline_wnyc_white)
-                        .setContentIntent(PendingIntent.getActivity(getApplicationContext(), 0, intent, PendingIntent.FLAG_IMMUTABLE))
-                        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
-
+        private void startForegroundCompat() {
+            if (notificationBuilder == null) return;
+            try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(NOTIFICATION_ID, notificationBuilder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
                 } else {
                     startForeground(NOTIFICATION_ID, notificationBuilder.build());
                 }
+            } catch (Exception e) {
+                Log.w(TAG, "Could not enter the foreground", e);
+            }
+        }
 
+        /**
+         * Builds the playback notification using the host's branding.
+         *
+         * @param activityIntent what tapping the notification opens; defaults to the app's launch activity
+         */
+        private void buildNotification(@Nullable Intent activityIntent) {
+            notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(NOTIFICATION_CHANNEL_ID, settings.channelName, NotificationManager.IMPORTANCE_LOW);
+                notificationManager.createNotificationChannel(channel);
+            }
+
+            notificationStyle = new MediaStyle().setMediaSession(mediaSession.getSessionToken());
+            notificationBuilder = new NotificationCompat.Builder(RemoteStreamerService.this, NOTIFICATION_CHANNEL_ID)
+                    .setStyle(notificationStyle)
+                    .setSmallIcon(settings.smallIconResId)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
+            if (settings.iconColor != null) {
+                notificationBuilder.setColor(settings.iconColor);
+            }
+            Intent launchIntent = activityIntent != null ? activityIntent : getPackageManager().getLaunchIntentForPackage(getPackageName());
+            if (launchIntent != null) {
+                notificationBuilder.setContentIntent(PendingIntent.getActivity(getApplicationContext(), 0, launchIntent, PendingIntent.FLAG_IMMUTABLE));
+            }
+
+            if (notificationActions.isEmpty()) {
                 notificationActions.put("play", new NotificationCompat.Action(
                         R.drawable.ic_baseline_play_arrow_24, "Play", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PLAY))
                 ));
@@ -642,16 +577,16 @@ import android.net.NetworkRequest;
                         R.drawable.ic_baseline_pause_24, "Pause", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PAUSE))
                 ));
                 notificationActions.put("seekbackward", new NotificationCompat.Action(
-                        R.drawable.ic_baseline_previous10, "Previous Track", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_REWIND)
+                        R.drawable.ic_baseline_previous10, "Skip back 10 seconds", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_REWIND)
                 ));
                 notificationActions.put("seekforward", new NotificationCompat.Action(
-                        R.drawable.ic_baseline_next10, "Next Track", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_FAST_FORWARD)
+                        R.drawable.ic_baseline_next10, "Skip forward 10 seconds", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_FAST_FORWARD)
                 ));
                 notificationActions.put("previoustrack", new NotificationCompat.Action(
-                        R.drawable.ic_baseline_previous10, "Previous Track", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+                        R.drawable.ic_baseline_previous10, "Skip back 10 seconds", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
                 ));
                 notificationActions.put("nexttrack", new NotificationCompat.Action(
-                        R.drawable.ic_baseline_next10, "Next Track", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT)
+                        R.drawable.ic_baseline_next10, "Skip forward 10 seconds", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT)
                 ));
                 notificationActions.put("stop", new NotificationCompat.Action(
                         R.drawable.ic_baseline_stop_24, "Stop", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_STOP)
@@ -665,14 +600,16 @@ import android.net.NetworkRequest;
                 playbackStateActions.put("nexttrack", PlaybackStateCompat.ACTION_SKIP_TO_NEXT);
                 playbackStateActions.put("seekto", PlaybackStateCompat.ACTION_SEEK_TO);
                 playbackStateActions.put("stop", PlaybackStateCompat.ACTION_STOP);
-            });
+            }
+
+            // Attach the actions and current metadata on the next update()
+            possibleActionsUpdate = true;
+            notificationUpdate = true;
         }
 
         public void destroy() {
             cancelReconnect();
-            if (networkCallback != null && connectivityManager != null) {
-                connectivityManager.unregisterNetworkCallback(networkCallback);
-            }
+            unregisterNetworkCallback();
             releasePlayer();
             if (executor != null) {
                 executor.shutdownNow();
@@ -683,6 +620,25 @@ import android.net.NetworkRequest;
                 notificationManager.cancel(NOTIFICATION_ID);
             }
             stopSelf();
+        }
+
+        @Override
+        public void onDestroy() {
+            cancelReconnect();
+            stopUpdatingTime();
+            unregisterNetworkCallback();
+            if (player != null) {
+                player.release();
+                player = null;
+            }
+            if (libraryProvider != null) {
+                libraryProvider.onDestroy();
+            }
+            if (executor != null) {
+                executor.shutdownNow();
+            }
+            mediaSession.release();
+            super.onDestroy();
         }
 
         @Override
@@ -762,6 +718,11 @@ import android.net.NetworkRequest;
             }
         }
 
+        /** Whether a transport action is offered for the current content (no seeking in live streams). */
+        private boolean isActionAvailable(String actionName) {
+            return isLiveStream ? LIVE_ACTIONS.contains(actionName) : ON_DEMAND_ACTIONS.contains(actionName);
+        }
+
         @SuppressLint("RestrictedApi")
         public void update() {
             if (possibleActionsUpdate) {
@@ -775,21 +736,21 @@ import android.net.NetworkRequest;
                 // Always advertise basic transport actions for Android Auto since
                 // playback is handled natively by the service
                 if (playbackStateActions.isEmpty()) {
-                    // connectAndInitialize() hasn't been called yet (Android Auto playing before JS init)
-                    // Hardcode the essential actions so DHU shows proper controls
+                    // The notification hasn't been built yet (a media browser is playing before JS init)
+                    // Hardcode the essential actions so the car shows proper controls
                     activePlaybackStateActions = PlaybackStateCompat.ACTION_PLAY
                             | PlaybackStateCompat.ACTION_PAUSE
                             | PlaybackStateCompat.ACTION_PLAY_PAUSE
                             | PlaybackStateCompat.ACTION_STOP;
                     if (!isLiveStream) {
                         activePlaybackStateActions |= PlaybackStateCompat.ACTION_SEEK_TO
-                                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
-                                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
+                                | PlaybackStateCompat.ACTION_REWIND
+                                | PlaybackStateCompat.ACTION_FAST_FORWARD;
                     }
                 } else {
                     String[] nativeActions = isLiveStream
                             ? new String[]{"play", "pause", "stop"}
-                            : new String[]{"play", "pause", "seekto", "stop", "previoustrack", "nexttrack"};
+                            : new String[]{"play", "pause", "seekto", "stop", "seekbackward", "seekforward"};
                     for (String nativeAction : nativeActions) {
                         if (playbackStateActions.containsKey(nativeAction)) {
                             activePlaybackStateActions = activePlaybackStateActions | playbackStateActions.get(nativeAction);
@@ -797,20 +758,17 @@ import android.net.NetworkRequest;
                     }
                 }
 
+                // Media browsers must always be able to start playback of browse items
+                activePlaybackStateActions |= browseActions();
+
                 int notificationActionIndex = 0;
                 int compactNotificationActionIndicesIndex = 0;
                 for (String actionName : possibleActions) {
-                    boolean actionAvailable = (plugin != null && plugin.hasActionHandler(actionName));
-                    if (actionAvailable) {
+                    if (isActionAvailable(actionName)) {
                         if (actionName.equals("play") && playbackState != PlaybackStateCompat.STATE_PAUSED) {
                             continue;
                         }
                         if (actionName.equals("pause") && playbackState != PlaybackStateCompat.STATE_PLAYING) {
-                            continue;
-                        }
-                        // For Android Auto: skip all seek/skip actions for live streams
-                        if (isLiveStream && (actionName.equals("seekforward") || actionName.equals("seekbackward")
-                                || actionName.equals("previoustrack") || actionName.equals("nexttrack"))) {
                             continue;
                         }
 
@@ -830,7 +788,13 @@ import android.net.NetworkRequest;
                 }
 
                 if (playbackStateBuilder != null) {
-                    playbackStateBuilder.setActions(activePlaybackStateActions);
+                    // A builder can't drop custom actions, so start a fresh one
+                    playbackStateBuilder = new PlaybackStateCompat.Builder().setActions(activePlaybackStateActions);
+                    if (!isLiveStream) {
+                        playbackStateBuilder
+                                .addCustomAction(MediaSessionCallback.ACTION_SEEK_BACKWARD, "Skip back 10 seconds", R.drawable.ic_baseline_previous10)
+                                .addCustomAction(MediaSessionCallback.ACTION_SEEK_FORWARD, "Skip forward 10 seconds", R.drawable.ic_baseline_next10);
+                    }
                 }
                 if (notificationStyle != null) {
                     if (compactNotificationActionIndicesIndex > 0) {
@@ -851,9 +815,11 @@ import android.net.NetworkRequest;
                 playbackStateUpdate = false;
             }
 
+            String displayTitle = title.isEmpty() ? settings.defaultTitle : title;
+
             if (mediaMetadataUpdate && mediaMetadataBuilder != null) {
                 mediaMetadataBuilder
-                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
+                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, displayTitle)
                         .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
                         .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
                         .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork)
@@ -864,12 +830,18 @@ import android.net.NetworkRequest;
 
             if (notificationUpdate && notificationBuilder != null) {
                 notificationBuilder
-                        .setContentTitle(title)
-                        .setContentText(artist + " - " + album)
+                        .setContentTitle(displayTitle)
+                        .setContentText(joinNonEmpty(artist, album))
                         .setLargeIcon(artwork);
                 notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build());
                 notificationUpdate = false;
             }
+        }
+
+        private static String joinNonEmpty(String first, String second) {
+            if (first.isEmpty()) return second;
+            if (second.isEmpty()) return first;
+            return first + " - " + second;
         }
 
         public void updatePossibleActions() {
@@ -877,9 +849,15 @@ import android.net.NetworkRequest;
             this.update();
         }
 
+        /** Plays a URL requested by JS. JS sends display metadata separately via setNowPlayingInfo. */
         public void play(String url) {
             if (url == null) return;
+            boolean isLive = url.contains(".m3u8");
+            currentItem = PlayableItem.fromUrl(url, isLive);
+            playUrl(url, isLive);
+        }
 
+        private void playUrl(final String url, final boolean isLive) {
             // Cancel any pending reconnect
             cancelReconnect();
             reconnectAttempts = 0;
@@ -900,13 +878,14 @@ import android.net.NetworkRequest;
                 if (url.contains(".m3u8")) {
                     mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
                             .createMediaSource(MediaItem.fromUri(url));
-                    this.isLiveStream = true;
-                    setDuration(0);
-                    setPosition(0);
                 } else {
                     mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
                             .createMediaSource(MediaItem.fromUri(url));
-                    this.isLiveStream = false;
+                }
+                this.isLiveStream = isLive;
+                if (isLive) {
+                    setDuration(0);
+                    setPosition(0);
                 }
 
                 player.setMediaSource(mediaSource);
@@ -919,6 +898,8 @@ import android.net.NetworkRequest;
                     player.play();
                 }
                 setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
+                // Live/on-demand may have changed, so the available actions may have too
+                possibleActionsUpdate = true;
                 update();
                 if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
             });
@@ -1006,7 +987,7 @@ import android.net.NetworkRequest;
                     if (player != null) {
                             player.release();
                             player = null;
-                    }   
+                    }
                     audioManager.abandonAudioFocusRequest(focusRequest);
                 });
             }
@@ -1252,6 +1233,17 @@ import android.net.NetworkRequest;
                 }
             };
             connectivityManager.registerNetworkCallback(request, networkCallback);
+        }
+
+        private void unregisterNetworkCallback() {
+            if (networkCallback != null && connectivityManager != null) {
+                try {
+                    connectivityManager.unregisterNetworkCallback(networkCallback);
+                } catch (IllegalArgumentException e) {
+                    // Already unregistered
+                }
+                networkCallback = null;
+            }
         }
 
         private void startUpdatingTime() {
