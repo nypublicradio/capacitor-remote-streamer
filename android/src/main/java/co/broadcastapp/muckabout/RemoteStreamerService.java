@@ -90,7 +90,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
 
         /** Transport actions offered in the notification, by content type. */
         private static final Set<String> LIVE_ACTIONS = new HashSet<>(Arrays.asList("play", "pause"));
-        private static final Set<String> ON_DEMAND_ACTIONS = new HashSet<>(Arrays.asList("play", "pause", "nexttrack", "previoustrack", "seekto"));
+        private static final Set<String> ON_DEMAND_ACTIONS = new HashSet<>(Arrays.asList("play", "pause", "seekbackward", "seekforward", "seekto"));
 
         private MediaSessionCompat mediaSession;
         private PlaybackStateCompat.Builder playbackStateBuilder;
@@ -101,7 +101,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         private final Map<String, NotificationCompat.Action> notificationActions = new HashMap<>();
         private final Map<String, Long> playbackStateActions = new HashMap<>();
         private final String[] possibleActions = {"previoustrack", "seekbackward", "play", "pause", "seekforward", "nexttrack", "seekto", "stop"};
-        final Set<String> possibleCompactViewActions = new HashSet<>(Arrays.asList("previoustrack", "play", "pause", "nexttrack", "stop", "seekto"));
+        final Set<String> possibleCompactViewActions = new HashSet<>(Arrays.asList("seekbackward", "play", "pause", "seekforward", "stop", "seekto"));
         private static final int NOTIFICATION_ID = 1;
 
         private int playbackState = PlaybackStateCompat.STATE_NONE;
@@ -744,13 +744,13 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                             | PlaybackStateCompat.ACTION_STOP;
                     if (!isLiveStream) {
                         activePlaybackStateActions |= PlaybackStateCompat.ACTION_SEEK_TO
-                                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
-                                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT;
+                                | PlaybackStateCompat.ACTION_REWIND
+                                | PlaybackStateCompat.ACTION_FAST_FORWARD;
                     }
                 } else {
                     String[] nativeActions = isLiveStream
                             ? new String[]{"play", "pause", "stop"}
-                            : new String[]{"play", "pause", "seekto", "stop", "previoustrack", "nexttrack"};
+                            : new String[]{"play", "pause", "seekto", "stop", "seekbackward", "seekforward"};
                     for (String nativeAction : nativeActions) {
                         if (playbackStateActions.containsKey(nativeAction)) {
                             activePlaybackStateActions = activePlaybackStateActions | playbackStateActions.get(nativeAction);
@@ -788,7 +788,13 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 }
 
                 if (playbackStateBuilder != null) {
-                    playbackStateBuilder.setActions(activePlaybackStateActions);
+                    // A builder can't drop custom actions, so start a fresh one
+                    playbackStateBuilder = new PlaybackStateCompat.Builder().setActions(activePlaybackStateActions);
+                    if (!isLiveStream) {
+                        playbackStateBuilder
+                                .addCustomAction(MediaSessionCallback.ACTION_SEEK_BACKWARD, "Skip back 10 seconds", R.drawable.ic_baseline_previous10)
+                                .addCustomAction(MediaSessionCallback.ACTION_SEEK_FORWARD, "Skip forward 10 seconds", R.drawable.ic_baseline_next10);
+                    }
                 }
                 if (notificationStyle != null) {
                     if (compactNotificationActionIndicesIndex > 0) {
