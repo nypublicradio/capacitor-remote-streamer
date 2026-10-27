@@ -237,6 +237,9 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 Bundle extras = new Bundle();
                 extras.putInt(EXTRA_CONTENT_STYLE_BROWSABLE_HINT, style);
                 extras.putInt(EXTRA_CONTENT_STYLE_PLAYABLE_HINT, style);
+                if (item.extras != null) {
+                    extras.putAll(item.extras);
+                }
                 MediaDescriptionCompat.Builder description = new MediaDescriptionCompat.Builder()
                         .setMediaId(item.id)
                         .setTitle(item.title)
@@ -810,7 +813,13 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             }
 
             if (playbackStateUpdate && playbackStateBuilder != null) {
-                playbackStateBuilder.setState(this.playbackState, this.position, this.playbackSpeed);
+                if (isLiveStream) {
+                    // No position, and nothing advancing: media controllers (Android Auto, the
+                    // notification) show live content instead of a seek bar, as Media3 does
+                    playbackStateBuilder.setState(this.playbackState, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 0f);
+                } else {
+                    playbackStateBuilder.setState(this.playbackState, this.position, this.playbackSpeed);
+                }
                 mediaSession.setPlaybackState(playbackStateBuilder.build());
                 playbackStateUpdate = false;
             }
@@ -823,7 +832,8 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                         .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
                         .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album)
                         .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork)
-                        .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration);
+                        // A negative duration means unknown/infinite: a live stream
+                        .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, isLiveStream ? -1 : duration);
                 mediaSession.setMetadata(mediaMetadataBuilder.build());
                 mediaMetadataUpdate = false;
             }
@@ -898,8 +908,10 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     player.play();
                 }
                 setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
-                // Live/on-demand may have changed, so the available actions may have too
+                // Live/on-demand may have changed, so the available actions and the
+                // published duration may have too
                 possibleActionsUpdate = true;
+                mediaMetadataUpdate = true;
                 update();
                 if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
             });
