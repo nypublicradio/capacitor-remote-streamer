@@ -94,10 +94,18 @@ jobs:
               sed -i 's,"version": "0.0.0","version": "'"$TAG"'",gi' package.json
             fi
             
+            # .npmrc isn't tracked, so write the registry for the scope as well as the token
+            echo "@nypublicradio:registry=https://npm.pkg.github.com" >> .npmrc
             echo "//npm.pkg.github.com/:_authToken=$PAT" >> .npmrc
-            npm publish
+
+            # Prereleases (e.g. v2.0.0-beta.1) go to the "next" dist-tag so they never become "latest"
+            if [[ "$TAG" == *-* ]]; then
+              npm publish --tag next
+            else
+              npm publish
+            fi
             
 executors:
   default:
     docker:
-      - image: cimg/node:18.18.2
+      - image: cimg/node:lts
