@@ -4,7 +4,7 @@
     "type": "git",
     "url": "git://github.com/nypublicradio/capacitor-remote-streamer.git"
   },
-  "version": "1.0.1-beta.6",
+  "version": "1.0.1-beta.7",
   "description": "Stream remote HLS and MP3 audio on iOS, Android and the web, with lock-screen controls and a native extension point for CarPlay/Android Auto. Capacitor 8.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
