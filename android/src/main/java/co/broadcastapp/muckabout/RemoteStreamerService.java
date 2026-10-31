@@ -383,8 +383,17 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             setArtist(artist);
             setAlbum(album);
             setArtwork(artwork);
-            if (durationMs > 0) setDuration(durationMs);
             update();
+            if (durationMs > 0) {
+                // On the main thread, after the play() this call follows, so the player is this item's
+                handler.post(() -> {
+                    // A length the player measured wins: the app's comes from the CMS, which can be off
+                    if (measuredDuration() <= 0) {
+                        setDuration(durationMs);
+                        update();
+                    }
+                });
+            }
 
             PlayableItem base = currentItem != null
                     ? currentItem
@@ -404,6 +413,17 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
 
         public boolean isCurrentlyPlaying() {
             return playbackState == PlaybackStateCompat.STATE_PLAYING;
+        }
+
+        /**
+         * The on-demand item's length as the player measured it from the audio, in ms, or 0 until
+         * known. More accurate than a published duration (the CMS's leaves out pre- and post-roll).
+         * Main thread.
+         */
+        private long measuredDuration() {
+            if (player == null || isLiveStream) return 0;
+            long d = player.getDuration();
+            return d != C.TIME_UNSET && d > 0 ? d : 0;
         }
 
         public long getDuration() {
@@ -1078,6 +1098,11 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                         case Player.STATE_READY:
                             if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", false));
                             if (!isLiveStream) startUpdatingTime();
+                            if (measuredDuration() > 0) {
+                                // Replaces the duration the item came with, for Android Auto and the notification
+                                setDuration(measuredDuration());
+                                update();
+                            }
                             {
                                 long dur = player.getDuration();
                                 JSObject readyData = new JSObject()
@@ -1330,8 +1355,9 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     if (player != null && player.isPlaying()) {
                         long currentTime = player.getCurrentPosition();
                         long duration = player.getDuration();
-                        if (duration != C.TIME_UNSET && duration > 0 && RemoteStreamerService.this.duration <= 0) {
-                            setDuration(duration);
+                        // Follow the measured length, even over a duration the item came with
+                        if (measuredDuration() > 0) {
+                            setDuration(measuredDuration());
                         }
                         setPosition(currentTime);
                         update();
