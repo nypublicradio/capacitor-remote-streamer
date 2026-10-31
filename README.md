@@ -143,6 +143,8 @@ The end of an on-demand item is reported as `stop` with `{ ended: true }` on And
 and web, and as `ended` on iOS. The app keeps running in the background for a short
 while after it, so it can start the next item.
 
+`enableCommandCenter` and `enableCommandCenterSeek` set up the iOS lock screen controls.
+
 | Param         | Type                                                                                            |
 | ------------- | ----------------------------------------------------------------------------------------------- |
 | **`options`** | <code>{ url: string; enableCommandCenter?: boolean; enableCommandCenterSeek?: boolean; }</code> |
@@ -165,6 +167,8 @@ pause() => Promise<void>
 resume() => Promise<void>
 ```
 
+Resumes. When nothing is loaded (after `stop`, `releasePlayer` or the end), plays the last item again.
+
 --------------------
 
 
@@ -173,6 +177,8 @@ resume() => Promise<void>
 ```typescript
 seekTo(options: { position: number; }) => Promise<void>
 ```
+
+`position` in seconds.
 
 | Param         | Type                               |
 | ------------- | ---------------------------------- |
@@ -209,6 +215,8 @@ setVolume(options: { volume: number; }) => Promise<void>
 setPlaybackRate(options: { rate: number; }) => Promise<void>
 ```
 
+Web only.
+
 | Param         | Type                           |
 | ------------- | ------------------------------ |
 | **`options`** | <code>{ rate: number; }</code> |
@@ -219,12 +227,16 @@ setPlaybackRate(options: { rate: number; }) => Promise<void>
 ### setNowPlayingInfo(...)
 
 ```typescript
-setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean; }) => Promise<void>
+setNowPlayingInfo(options: { title: string; artist: string; album: string; duration: string | number; imageUrl: string; isLiveStream: boolean; }) => Promise<void>
 ```
 
-| Param         | Type                                                                                                                      |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| **`options`** | <code>{ title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean; }</code> |
+Lock screen, notification and car display metadata for what's playing. `duration` (seconds)
+only stands in until the player has measured the audio. Native platforms load `imageUrl`
+in the background.
+
+| Param         | Type                                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **`options`** | <code>{ title: string; artist: string; album: string; duration: string \| number; imageUrl: string; isLiveStream: boolean; }</code> |
 
 --------------------
 
@@ -234,6 +246,8 @@ setNowPlayingInfo(options: { title: string; artist: string; album: string; durat
 ```typescript
 releasePlayer() => Promise<void>
 ```
+
+Unloads the player, e.g. before playing something else. Reported as `stop`.
 
 --------------------
 
@@ -316,9 +330,10 @@ removeAllListeners() => Promise<void>
 
 #### StopEvent
 
-| Prop       | Type                |
-| ---------- | ------------------- |
-| **`type`** | <code>'stop'</code> |
+| Prop        | Type                 | Description                                                                |
+| ----------- | -------------------- | -------------------------------------------------------------------------- |
+| **`type`**  | <code>'stop'</code>  |                                                                            |
+| **`ended`** | <code>boolean</code> | True at the end of an on-demand item (Android and web; iOS sends `ended`). |
 
 
 #### EndedEvent
@@ -331,12 +346,12 @@ removeAllListeners() => Promise<void>
 
 #### ReadyEvent
 
-| Prop               | Type                 |
-| ------------------ | -------------------- |
-| **`type`**         | <code>'ready'</code> |
-| **`duration`**     | <code>number</code>  |
-| **`currentTime`**  | <code>number</code>  |
-| **`isLiveStream`** | <code>boolean</code> |
+| Prop               | Type                 | Description                                                     |
+| ------------------ | -------------------- | --------------------------------------------------------------- |
+| **`type`**         | <code>'ready'</code> |                                                                 |
+| **`duration`**     | <code>number</code>  | Measured length in seconds; 0 for live streams or when unknown. |
+| **`currentTime`**  | <code>number</code>  |                                                                 |
+| **`isLiveStream`** | <code>boolean</code> |                                                                 |
 
 
 #### TimeUpdateEvent
@@ -350,6 +365,8 @@ removeAllListeners() => Promise<void>
 
 #### BufferingEvent
 
+Playback waits for data (`isBuffering: true`), or plays again (`false`). Also sent while offline.
+
 | Prop              | Type                     |
 | ----------------- | ------------------------ |
 | **`type`**        | <code>'buffering'</code> |
@@ -357,6 +374,9 @@ removeAllListeners() => Promise<void>
 
 
 #### ErrorEvent
+
+The item can't be played. Not sent for problems the player recovers from by itself, such
+as losing the network: playback then resumes when a network comes back.
 
 | Prop          | Type                 |
 | ------------- | -------------------- |

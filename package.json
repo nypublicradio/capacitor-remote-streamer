@@ -16,7 +16,6 @@
     "android/consumer-rules.pro",
     "dist/",
     "ios/Sources",
-    "ios/Tests",
     "Package.swift",
     "NypublicradioCapacitorRemoteStreamer.podspec"
   ],

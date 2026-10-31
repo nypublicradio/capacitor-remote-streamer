@@ -30,6 +30,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.addObserver(self, selector: #selector(handleBufferingEvent), name: .remoteStreamerBuffering, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleReadyEvent), name: .remoteStreamerReady, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handlePlayFromMediaIdEvent), name: .remoteStreamerPlayFromMediaId, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleErrorEvent), name: .remoteStreamerError, object: nil)
     }
 
     @objc func handlePlayEvent() {
@@ -48,8 +49,14 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
         notifyListeners("ended", data: ["ended": true])
     }
 
-    @objc func handleBufferingEvent() {
-        notifyListeners("buffering", data: nil)
+    @objc func handleBufferingEvent(notification: Notification) {
+        let isBuffering = notification.userInfo?["isBuffering"] as? Bool ?? true
+        notifyListeners("buffering", data: ["isBuffering": isBuffering])
+    }
+
+    @objc func handleErrorEvent(notification: Notification) {
+        let message = notification.userInfo?["message"] as? String ?? "Playback failed"
+        notifyListeners("error", data: ["message": message])
     }
 
     @objc func handleReadyEvent(notification: Notification) {

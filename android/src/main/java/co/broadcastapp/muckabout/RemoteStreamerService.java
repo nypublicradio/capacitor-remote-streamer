@@ -46,9 +46,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
-import android.media.AudioFocusRequest;
 import androidx.media3.common.AudioAttributes;
-import android.media.AudioManager;
 import com.getcapacitor.JSObject;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -63,12 +61,11 @@ import android.net.Uri;
 import android.os.Bundle;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import android.net.ConnectivityManager;
 import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
 
 import co.broadcastapp.muckabout.library.BrowseItem;
 import co.broadcastapp.muckabout.library.MediaLibraryProvider;
@@ -78,7 +75,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
     // Media3 marks the explicit media source factories (HLS vs progressive) as
     // unstable API; opting in keeps the same playback setup as ExoPlayer 2.
     @OptIn(markerClass = UnstableApi.class)
-    public class RemoteStreamerService extends MediaBrowserServiceCompat implements AudioManager.OnAudioFocusChangeListener {
+    public class RemoteStreamerService extends MediaBrowserServiceCompat {
         private static final String TAG = "RemoteStreamerService";
 
         private static final String EXTRA_CONTENT_STYLE_BROWSABLE_HINT = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT";
@@ -101,8 +98,8 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         private MediaStyle notificationStyle;
         private final Map<String, NotificationCompat.Action> notificationActions = new HashMap<>();
         private final Map<String, Long> playbackStateActions = new HashMap<>();
-        private final String[] possibleActions = {"previoustrack", "seekbackward", "play", "pause", "seekforward", "nexttrack", "seekto", "stop"};
-        final Set<String> possibleCompactViewActions = new HashSet<>(Arrays.asList("seekbackward", "play", "pause", "seekforward", "stop", "seekto"));
+        private final String[] possibleActions = {"seekbackward", "play", "pause", "seekforward", "seekto"};
+        final Set<String> possibleCompactViewActions = new HashSet<>(Arrays.asList("seekbackward", "play", "pause", "seekforward"));
         private static final int NOTIFICATION_ID = 1;
 
         private int playbackState = PlaybackStateCompat.STATE_NONE;
@@ -111,8 +108,8 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         private String album = "";
         private Bitmap artwork = null;
         private long duration = 0;
+        /** Position published when there's no player (0 after a stop). */
         private long position = 0;
-        private float playbackSpeed = 1.0F;
 
         private boolean possibleActionsUpdate = true;
         private boolean playbackStateUpdate = false;
@@ -121,23 +118,14 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
 
         private ExoPlayer player;
         private DefaultDataSource.Factory dataSourceFactory;
-        private AudioManager audioManager;
-        private AudioFocusRequest focusRequest;
         private Handler handler;
         private Runnable updateTimeTask;
         private boolean isLiveStream = false;
-        private boolean resumeOnFocusLossTransient = false;
 
-        // Reconnection state
+        // Network recovery: playback the network cut off is rebuilt when a network comes back
         private String currentUrl;
-        private int reconnectAttempts = 0;
-        private static final int MAX_RECONNECT_ATTEMPTS = 3;
-        private static final long STALL_TIMEOUT_MS = 30000; // 30 seconds
-        private Runnable reconnectRunnable;
-        private Runnable stallWatchdog;
-        private boolean isReconnecting = false;
-        private boolean wasPlayingBeforeStall = false;
-        private long savedPosition = 0; // saved playback position for on-demand recovery
+        private boolean interruptedByNetwork = false;
+        private long interruptedPosition = 0; // where on-demand playback was cut off
         private ConnectivityManager connectivityManager;
         private AudioAttributes playerAudioAttributes;
         private ConnectivityManager.NetworkCallback networkCallback;
@@ -283,13 +271,8 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
 
         /** Play pressed (media session, headset, car). Restarts or picks a default when nothing is loaded. */
         void playOrResume() {
-            if (player != null) {
+            if (player != null || currentItem != null) {
                 resume();
-                return;
-            }
-            PlayableItem item = currentItem;
-            if (item != null) {
-                handler.post(() -> playItem(item));
                 return;
             }
             final MediaLibraryProvider provider = libraryProvider;
@@ -353,14 +336,15 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             final String imageUrl = item.artworkUrl;
             if (imageUrl == null || imageUrl.trim().isEmpty()) return;
             executor().execute(() -> {
+                HttpURLConnection conn = null;
                 try {
-                    HttpURLConnection conn = (HttpURLConnection) new URL(imageUrl).openConnection();
+                    conn = (HttpURLConnection) new URL(imageUrl).openConnection();
                     conn.setConnectTimeout(5000);
                     conn.setReadTimeout(5000);
-                    InputStream is = conn.getInputStream();
-                    Bitmap bmp = BitmapFactory.decodeStream(is);
-                    is.close();
-                    conn.disconnect();
+                    Bitmap bmp;
+                    try (InputStream is = conn.getInputStream()) {
+                        bmp = BitmapFactory.decodeStream(is);
+                    }
                     if (bmp != null) {
                         handler.post(() -> {
                             // Ignore artwork that arrives after a different item started
@@ -372,34 +356,34 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "Failed to load artwork " + imageUrl, e);
+                } finally {
+                    if (conn != null) conn.disconnect();
                 }
             });
         }
 
-        /** Updates the current item's display metadata (JS {@code setNowPlayingInfo}). */
+        /** Updates the current item's display metadata (JS {@code setNowPlayingInfo}); new artwork loads in the background. */
         public void setNowPlayingMetadata(@NonNull String title, @NonNull String artist, @NonNull String album,
-                                          @Nullable String artworkUrl, @Nullable Bitmap artwork, long durationMs) {
-            setTitle(title);
-            setArtist(artist);
-            setAlbum(album);
-            setArtwork(artwork);
-            update();
-            if (durationMs > 0) {
-                // On the main thread, after the play() this call follows, so the player is this item's
-                handler.post(() -> {
-                    // A length the player measured wins: the app's comes from the CMS, which can be off
-                    if (measuredDuration() <= 0) {
-                        setDuration(durationMs);
-                        update();
-                    }
-                });
-            }
+                                          @Nullable String artworkUrl, long durationMs) {
+            // On the main thread, after the play() this call follows, so the player is this item's
+            handler.post(() -> {
+                PlayableItem base = currentItem != null
+                        ? currentItem
+                        : PlayableItem.fromUrl(currentUrl != null ? currentUrl : "", isLiveStream);
+                boolean artworkChanged = !Objects.equals(base.artworkUrl, artworkUrl);
+                setTitle(title);
+                setArtist(artist);
+                setAlbum(album);
+                if (artworkChanged) setArtwork(null);
+                // A length the player measured wins: the app's comes from the CMS, which can be off
+                if (durationMs > 0 && measuredDuration() <= 0) setDuration(durationMs);
+                update();
 
-            PlayableItem base = currentItem != null
-                    ? currentItem
-                    : PlayableItem.fromUrl(currentUrl != null ? currentUrl : "", isLiveStream);
-            currentItem = base.withMetadata(title, artist, album, artworkUrl,
-                    durationMs > 0 ? durationMs / 1000.0 : base.durationSeconds);
+                PlayableItem item = base.withMetadata(title, artist, album, artworkUrl,
+                        durationMs > 0 ? durationMs / 1000.0 : base.durationSeconds);
+                currentItem = item;
+                if (artworkChanged) loadArtwork(item);
+            });
         }
 
         @Nullable
@@ -427,13 +411,9 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         }
 
         public long getDuration() {
-            if (player != null) {
-                long d = player.getDuration();
-                if (d != C.TIME_UNSET && d > 0) {
-                    return d;
-                }
-            }
-            return duration;
+            if (isLiveStream) return 0; // the player reports the live window's length
+            long measured = measuredDuration();
+            return measured > 0 ? measured : duration;
         }
 
         private synchronized ExecutorService executor() {
@@ -448,7 +428,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         public void onCreate() {
             super.onCreate();
             handler = new Handler(Looper.getMainLooper());
-            audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             settings = PlayerSettings.load(this);
             setupNetworkCallback();
 
@@ -481,18 +460,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             this.playerAudioAttributes = new AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .build();
-
-            // Create system audio attributes for audio focus request
-            android.media.AudioAttributes systemAudioAttributes = new android.media.AudioAttributes.Builder()
-                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build();
-
-            focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setAudioAttributes(systemAudioAttributes)
-                    .setAcceptsDelayedFocusGain(true)
-                    .setOnAudioFocusChangeListener(this)
                     .build();
         }
 
@@ -576,7 +543,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     startForeground(NOTIFICATION_ID, notificationBuilder.build());
                 }
                 isForeground = true;
-                if (plugin != null) plugin.onForegroundChanged(true);
+                webViewNeedChanged();
             } catch (Exception e) {
                 Log.w(TAG, "Could not enter the foreground", e);
             }
@@ -588,12 +555,27 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             isForeground = false;
             stopForeground(true);
             stopSelf();
-            if (plugin != null) plugin.onForegroundChanged(false);
+            webViewNeedChanged();
         }
 
-        /** Whether playback keeps the service in the foreground (also briefly after an item ends). */
-        public boolean isInForeground() {
-            return isForeground;
+        /** Leaves the foreground in a while, unless something plays before then. */
+        private void leaveForegroundSoon() {
+            handler.removeCallbacks(leaveForegroundAfterEnd);
+            handler.postDelayed(leaveForegroundAfterEnd, END_OF_ITEM_FOREGROUND_MS);
+        }
+
+        /**
+         * Whether the app's JS needs to keep running in the background: while something plays,
+         * and briefly after it stops (an item ended, or the app is switching items). Not while
+         * paused. Main thread.
+         */
+        public boolean needsWebView() {
+            return isForeground && playbackState != PlaybackStateCompat.STATE_PAUSED;
+        }
+
+        private void webViewNeedChanged() {
+            RemoteStreamerPlugin p = plugin;
+            if (p != null) handler.post(p::updateWebViewVisibility);
         }
 
         /**
@@ -634,22 +616,11 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 notificationActions.put("seekforward", new NotificationCompat.Action(
                         R.drawable.ic_baseline_next10, "Skip forward 10 seconds", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_FAST_FORWARD)
                 ));
-                notificationActions.put("previoustrack", new NotificationCompat.Action(
-                        R.drawable.ic_baseline_previous10, "Skip back 10 seconds", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
-                ));
-                notificationActions.put("nexttrack", new NotificationCompat.Action(
-                        R.drawable.ic_baseline_next10, "Skip forward 10 seconds", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT)
-                ));
-                notificationActions.put("stop", new NotificationCompat.Action(
-                        R.drawable.ic_baseline_stop_24, "Stop", MediaButtonReceiver.buildMediaButtonPendingIntent(RemoteStreamerService.this, PlaybackStateCompat.ACTION_STOP)
-                ));
 
-                playbackStateActions.put("previoustrack", PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
                 playbackStateActions.put("seekbackward", PlaybackStateCompat.ACTION_REWIND);
                 playbackStateActions.put("play", (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PLAY));
                 playbackStateActions.put("pause", (PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_PAUSE));
                 playbackStateActions.put("seekforward", PlaybackStateCompat.ACTION_FAST_FORWARD);
-                playbackStateActions.put("nexttrack", PlaybackStateCompat.ACTION_SKIP_TO_NEXT);
                 playbackStateActions.put("seekto", PlaybackStateCompat.ACTION_SEEK_TO);
                 playbackStateActions.put("stop", PlaybackStateCompat.ACTION_STOP);
             }
@@ -660,9 +631,8 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         }
 
         public void destroy() {
-            cancelReconnect();
             unregisterNetworkCallback();
-            releasePlayer();
+            releaseCurrentPlayer();
             if (executor != null) {
                 executor.shutdownNow();
             }
@@ -678,13 +648,10 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
 
         @Override
         public void onDestroy() {
-            cancelReconnect();
-            stopUpdatingTime();
+            // Nothing posted earlier (a pending leaveForeground, artwork, metadata) runs after this
+            handler.removeCallbacksAndMessages(null);
             unregisterNetworkCallback();
-            if (player != null) {
-                player.release();
-                player = null;
-            }
+            releaseCurrentPlayer();
             if (libraryProvider != null) {
                 libraryProvider.onDestroy();
             }
@@ -707,6 +674,13 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
 
         @Override
         public int onStartCommand(Intent intent, int flags, int startId) {
+            if (intent != null && Intent.ACTION_MEDIA_BUTTON.equals(intent.getAction()) && !isForeground) {
+                // MediaButtonReceiver started us with startForegroundService (e.g. a headset button
+                // while the app wasn't running): Android requires the foreground right away. Leave
+                // it again unless the button starts playback.
+                ensureForeground();
+                leaveForegroundSoon();
+            }
             MediaButtonReceiver.handleIntent(mediaSession, intent);
             super.onStartCommand(intent, flags, startId);
             return Service.START_NOT_STICKY;
@@ -717,6 +691,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 this.playbackState = playbackState;
                 playbackStateUpdate = true;
                 possibleActionsUpdate = true;
+                webViewNeedChanged();
             }
         }
 
@@ -765,13 +740,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             }
         }
 
-        public void setPlaybackSpeed(float playbackSpeed) {
-            if (this.playbackSpeed != playbackSpeed) {
-                this.playbackSpeed = playbackSpeed;
-                playbackStateUpdate = true;
-            }
-        }
-
         /** Whether a transport action is offered for the current content (no seeking in live streams). */
         private boolean isActionAvailable(String actionName) {
             return isLiveStream ? LIVE_ACTIONS.contains(actionName) : ON_DEMAND_ACTIONS.contains(actionName);
@@ -815,14 +783,17 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 // Media browsers must always be able to start playback of browse items
                 activePlaybackStateActions |= browseActions();
 
+                // Pause while playing or buffering; play otherwise (paused, stopped, an error)
+                boolean playing = playbackState == PlaybackStateCompat.STATE_PLAYING
+                        || playbackState == PlaybackStateCompat.STATE_BUFFERING;
                 int notificationActionIndex = 0;
                 int compactNotificationActionIndicesIndex = 0;
                 for (String actionName : possibleActions) {
                     if (isActionAvailable(actionName)) {
-                        if (actionName.equals("play") && playbackState != PlaybackStateCompat.STATE_PAUSED) {
+                        if (actionName.equals("play") && playing) {
                             continue;
                         }
-                        if (actionName.equals("pause") && playbackState != PlaybackStateCompat.STATE_PLAYING) {
+                        if (actionName.equals("pause") && !playing) {
                             continue;
                         }
 
@@ -869,7 +840,9 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     // notification) show live content instead of a seek bar, as Media3 does
                     playbackStateBuilder.setState(this.playbackState, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 0f);
                 } else {
-                    playbackStateBuilder.setState(this.playbackState, this.position, this.playbackSpeed);
+                    // Published on changes only (play, pause, seek, buffering): controllers advance it themselves
+                    long currentPosition = player != null ? player.getCurrentPosition() : position;
+                    playbackStateBuilder.setState(this.playbackState, currentPosition, 1.0f);
                 }
                 mediaSession.setPlaybackState(playbackStateBuilder.build());
                 playbackStateUpdate = false;
@@ -903,11 +876,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             if (first.isEmpty()) return second;
             if (second.isEmpty()) return first;
             return first + " - " + second;
-        }
-
-        public void updatePossibleActions() {
-            this.possibleActionsUpdate = true;
-            this.update();
         }
 
         /**
@@ -944,45 +912,16 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         }
 
         private void playUrl(final String url, final boolean isLive) {
-            // Cancel any pending reconnect
-            cancelReconnect();
-            reconnectAttempts = 0;
-            isReconnecting = false;
-            currentUrl = url;
-
             handler.post(() -> {
-                // Release old player synchronously (we're already on the handler thread)
-                if (player != null) {
-                    stopUpdatingTime();
-                    player.release();
-                    player = null;
-                }
-
-                player = new ExoPlayer.Builder(this).build();
-
-                MediaSource mediaSource;
-                if (url.contains(".m3u8")) {
-                    mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
-                            .createMediaSource(MediaItem.fromUri(url));
-                } else {
-                    mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
-                            .createMediaSource(MediaItem.fromUri(url));
-                }
+                currentUrl = url;
+                interruptedByNetwork = false;
+                interruptedPosition = 0;
                 this.isLiveStream = isLive;
                 if (isLive) {
                     setDuration(0);
                     setPosition(0);
                 }
-
-                player.setMediaSource(mediaSource);
-                player.prepare();
-
-                setupPlayerListeners();
-
-                int focusResult = audioManager.requestAudioFocus(focusRequest);
-                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                    player.play();
-                }
+                startPlayer(0);
                 setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
                 // Live/on-demand may have changed, so the available actions and the
                 // published duration may have too
@@ -993,56 +932,90 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             });
         }
 
+        /**
+         * Replaces the player with a new one for {@link #currentUrl} and starts it, at
+         * {@code positionMs} for on-demand. ExoPlayer manages audio focus (pausing for a call,
+         * ducking under a navigation prompt) and pauses when headphones disconnect; the wake
+         * mode keeps streaming with the screen off. Main thread.
+         */
+        private void startPlayer(long positionMs) {
+            releaseCurrentPlayer();
+            player = new ExoPlayer.Builder(this)
+                    .setAudioAttributes(playerAudioAttributes, true)
+                    .setHandleAudioBecomingNoisy(true)
+                    .setWakeMode(C.WAKE_MODE_NETWORK)
+                    .build();
+            MediaItem mediaItem = MediaItem.fromUri(currentUrl);
+            MediaSource mediaSource = currentUrl.contains(".m3u8")
+                    ? new HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
+                    : new ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem);
+            player.setMediaSource(mediaSource);
+            setupPlayerListeners();
+            player.prepare();
+            if (positionMs > 0) player.seekTo(positionMs);
+            player.play();
+        }
+
+        /** Main thread. */
+        private void releaseCurrentPlayer() {
+            stopUpdatingTime();
+            if (player != null) {
+                player.release();
+                player = null;
+            }
+        }
+
         public void pause() {
-            if (player != null) {
-                handler.post(() -> {
-                    setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
-                    update();
-                    if (player != null) {
-                        player.pause();
-                    }
-                });
+            handler.post(() -> {
+                if (player == null) return;
+                // The user paused: don't resume when the network comes back
+                interruptedByNetwork = false;
+                player.pause();
+                setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
+                update();
                 if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
-            }
+            });
         }
 
+        /** Resumes, or plays the last item again when nothing is loaded (after a stop, a release or its end). */
         public void resume() {
-            if (player != null) {
-                int focusResult = audioManager.requestAudioFocus(focusRequest);
-                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                    handler.post(() -> {
-                        if (player != null) {
-                            if (isLiveStream) {
-                                player.seekToDefaultPosition();
-                            }
-                            player.play();
-                        }
-                    });
-                    setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
-                    update();
-                    if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
+            handler.post(() -> {
+                if (player == null) {
+                    PlayableItem item = currentItem;
+                    if (item != null) playItem(item);
+                    return;
                 }
-            }
+                ensureForeground();
+                // Stopped by an error: load it again
+                if (player.getPlaybackState() == Player.STATE_IDLE) {
+                    player.prepare();
+                }
+                if (isLiveStream) {
+                    player.seekToDefaultPosition();
+                }
+                player.play();
+                setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
+                update();
+                if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
+            });
         }
 
-        public void seekTo(Long position) {
-            if (player != null) {
-                handler.post(() -> player.seekTo(position));
-            }
+        public void seekTo(long position) {
+            handler.post(() -> {
+                if (player != null) player.seekTo(position);
+            });
         }
 
         public void seekBy(long offsetMs) {
-            if (player != null) {
-                handler.post(() -> {
-                    if (player != null) {
-                        long newPos = player.getCurrentPosition() + offsetMs;
-                        if (newPos < 0) newPos = 0;
-                        long duration = player.getDuration();
-                        if (duration > 0 && newPos > duration) newPos = duration;
-                        player.seekTo(newPos);
-                    }
-                });
-            }
+            handler.post(() -> {
+                if (player != null) {
+                    long newPos = player.getCurrentPosition() + offsetMs;
+                    if (newPos < 0) newPos = 0;
+                    long duration = player.getDuration();
+                    if (duration > 0 && newPos > duration) newPos = duration;
+                    player.seekTo(newPos);
+                }
+            });
         }
 
         public boolean isLiveStream() {
@@ -1050,41 +1023,62 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         }
 
         public void stop() {
-            stop(false);
+            handler.post(() -> stop(false));
         }
 
-        public void stop(final boolean ended) {
-            cancelReconnect();
-            reconnectAttempts = 0;
-            isReconnecting = false;
+        /** Stops and unloads, at the end of an item ({@code ended}) or on request. Main thread. */
+        private void stop(final boolean ended) {
+            interruptedByNetwork = false;
             if (plugin != null) plugin.onPlayerEvent("stop", new JSObject().put("ended", ended));
+            releaseCurrentPlayer();
             setPlaybackState(PlaybackStateCompat.STATE_STOPPED);
             setPosition(0);
             update();
-            releasePlayer();
             if (ended) {
                 // Stay in the foreground for a while: the app may be in the background with the
                 // screen off, and needs to run to start the next item before Android freezes it
-                handler.removeCallbacks(leaveForegroundAfterEnd);
-                handler.postDelayed(leaveForegroundAfterEnd, END_OF_ITEM_FOREGROUND_MS);
+                leaveForegroundSoon();
             } else {
-                handler.post(this::leaveForeground);
+                leaveForeground();
             }
         }
 
+        /**
+         * Unloads the player (JS {@code releasePlayer}), e.g. before the app plays something else:
+         * the service stays in the foreground for a while, for that next play().
+         */
         public void releasePlayer() {
-            if (player != null) {
+            handler.post(() -> {
+                if (player == null) return;
+                interruptedByNetwork = false;
                 if (plugin != null) plugin.onPlayerEvent("stop", new JSObject());
-                handler.post(() -> {
-                    Log.d("RemoteStreamerService", "releasing player");
-                    stopUpdatingTime();
-                    if (player != null) {
-                            player.release();
-                            player = null;
-                    }
-                    audioManager.abandonAudioFocusRequest(focusRequest);
-                });
+                releaseCurrentPlayer();
+                setPlaybackState(PlaybackStateCompat.STATE_STOPPED);
+                setPosition(0);
+                update();
+                leaveForegroundSoon();
+            });
+        }
+
+        /**
+         * The session's state from the player's: playing (or buffering) while it should play,
+         * paused when the user or the system paused it (a call, headphones unplugged). Main thread.
+         */
+        private void syncPlaybackState() {
+            if (player == null) return;
+            int state;
+            if (!player.getPlayWhenReady()
+                    || player.getPlaybackSuppressionReason() != Player.PLAYBACK_SUPPRESSION_REASON_NONE) {
+                state = PlaybackStateCompat.STATE_PAUSED;
+            } else if (player.getPlaybackState() == Player.STATE_BUFFERING) {
+                state = PlaybackStateCompat.STATE_BUFFERING;
+            } else if (player.getPlaybackState() == Player.STATE_READY) {
+                state = PlaybackStateCompat.STATE_PLAYING;
+            } else {
+                return; // an error or the end: handled where they're reported
             }
+            setPlaybackState(state);
+            update();
         }
 
         private void setupPlayerListeners() {
@@ -1094,246 +1088,136 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     switch (state) {
                         case Player.STATE_BUFFERING:
                             if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", true));
+                            syncPlaybackState();
                             break;
                         case Player.STATE_READY:
                             if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", false));
-                            if (!isLiveStream) startUpdatingTime();
                             if (measuredDuration() > 0) {
                                 // Replaces the duration the item came with, for Android Auto and the notification
                                 setDuration(measuredDuration());
-                                update();
                             }
-                            {
-                                long dur = player.getDuration();
-                                JSObject readyData = new JSObject()
-                                        .put("duration", (dur != C.TIME_UNSET && dur > 0) ? dur / 1000.0 : 0)
-                                        .put("currentTime", player.getCurrentPosition() / 1000.0)
-                                        .put("isLiveStream", isLiveStream);
-                                if (plugin != null) plugin.onPlayerEvent("ready", readyData);
-                            }
+                            syncPlaybackState();
+                            JSObject readyData = new JSObject()
+                                    .put("duration", measuredDuration() / 1000.0)
+                                    .put("currentTime", player.getCurrentPosition() / 1000.0)
+                                    .put("isLiveStream", isLiveStream);
+                            if (plugin != null) plugin.onPlayerEvent("ready", readyData);
                             break;
                         case Player.STATE_ENDED:
-                            stopUpdatingTime();
                             stop(true);
                             break;
                     }
                 }
 
                 @Override
+                public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                    syncPlaybackState();
+                }
+
+                @Override
+                public void onPlaybackSuppressionReasonChanged(int playbackSuppressionReason) {
+                    syncPlaybackState();
+                }
+
+                @Override
+                public void onPositionDiscontinuity(@NonNull Player.PositionInfo oldPosition,
+                                                    @NonNull Player.PositionInfo newPosition, int reason) {
+                    // E.g. a seek: controllers need the new position
+                    playbackStateUpdate = true;
+                    update();
+                }
+
+                @Override
                 public void onIsPlayingChanged(boolean isPlaying) {
                     if (isPlaying) {
+                        // Playing again, so whatever the network did is over
+                        interruptedByNetwork = false;
+                        if (!isLiveStream) startUpdatingTime();
                         if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
                     } else {
-                        // Don't fire pause during buffering — it's a transient state, not a user action.
-                        // Nor at the end of an item: that is reported as stop {ended: true}
-                        if (player != null && player.getPlaybackState() != Player.STATE_BUFFERING
-                                && player.getPlaybackState() != Player.STATE_ENDED) {
+                        stopUpdatingTime();
+                        // Only a real pause: not buffering, the end of an item (reported as
+                        // stop {ended: true}) or an error (reported as error)
+                        if (player != null && player.getPlaybackState() == Player.STATE_READY) {
                             if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
                         }
                     }
                 }
 
                 @Override
-                public void onPlayerError(PlaybackException error) {
-                    if (error.getCause() != null && error.getCause().getClass().equals(java.net.ConnectException.class)) {
-                        pause();
-                    }
+                public void onPlayerError(@NonNull PlaybackException error) {
                     if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                        // Fell behind a live stream's window (e.g. after a long pause): rejoin it live
                         player.seekToDefaultPosition();
                         player.prepare();
-                        player.play();
+                        return;
                     }
+                    if (isNetworkError(error) && (interruptedByNetwork || !hasNetwork())) {
+                        // Offline: the network callback restarts playback when a network comes back
+                        interruptedByNetwork = true;
+                        if (!isLiveStream) {
+                            long pos = player.getCurrentPosition();
+                            if (pos > 0) interruptedPosition = pos;
+                        }
+                        setPlaybackState(PlaybackStateCompat.STATE_BUFFERING);
+                        update();
+                        if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", true));
+                        return;
+                    }
+                    setPlaybackState(PlaybackStateCompat.STATE_ERROR);
+                    update();
+                    // Nothing plays: give up the foreground unless something plays again soon
+                    leaveForegroundSoon();
                     if (plugin != null) plugin.onPlayerEvent("error", new JSObject().put("message", error.getMessage()));
                 }
             });
         }
 
-        // --- Reconnection logic ---
-
-        private void reconnect() {
-            if (currentUrl == null || !isLiveStream) return;
-            if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-                Log.w(TAG, "Max reconnect attempts (" + MAX_RECONNECT_ATTEMPTS + ") reached, pausing");
-                isReconnecting = false;
-                // Use PAUSED instead of ERROR so handleNetworkRestored can still revive
-                setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
-                update();
-                if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
-                return;
-            }
-
-            isReconnecting = true;
-            reconnectAttempts++;
-
-            // Exponential backoff: 2s, 4s, 8s
-            long delay = (long) (Math.pow(2, reconnectAttempts) * 1000);
-            Log.d(TAG, "Reconnect attempt " + reconnectAttempts + "/" + MAX_RECONNECT_ATTEMPTS + " in " + delay + "ms");
-
-            setPlaybackState(PlaybackStateCompat.STATE_BUFFERING);
-            update();
-            if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", true));
-
-            reconnectRunnable = () -> performReconnect(currentUrl);
-            handler.postDelayed(reconnectRunnable, delay);
+        private static boolean isNetworkError(PlaybackException error) {
+            return error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
+                    || error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT;
         }
 
-        private void performReconnect(String url) {
-            if (!isReconnecting) return;
-            Log.d(TAG, "Performing reconnect to: " + url);
-
-            handler.post(() -> {
-                // Release old player
-                if (player != null) {
-                    stopUpdatingTime();
-                    player.release();
-                    player = null;
-                }
-
-                player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
-                player.setAudioAttributes(this.playerAudioAttributes, false);
-
-                MediaSource mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
-                        .createMediaSource(MediaItem.fromUri(url));
-
-                player.setMediaSource(mediaSource);
-                player.prepare();
-                setupPlayerListeners();
-
-                int focusResult = audioManager.requestAudioFocus(focusRequest);
-                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                    player.play();
-                }
-            });
+        private boolean hasNetwork() {
+            return connectivityManager != null && connectivityManager.getActiveNetwork() != null;
         }
 
-        private void performOnDemandResume() {
-            if (currentUrl == null) return;
-            handler.post(() -> {
-                Log.d(TAG, "performOnDemandResume: rebuilding at position " + savedPosition + "ms");
-                cancelReconnect();
-                cancelStallWatchdog();
-
-                if (player != null) {
-                    stopUpdatingTime();
-                    player.release();
-                    player = null;
-                }
-
-                player = new ExoPlayer.Builder(RemoteStreamerService.this).build();
-                player.setAudioAttributes(this.playerAudioAttributes, false);
-
-                MediaSource mediaSource;
-                if (currentUrl.contains(".m3u8")) {
-                    mediaSource = new HlsMediaSource.Factory(dataSourceFactory)
-                            .createMediaSource(MediaItem.fromUri(currentUrl));
-                } else {
-                    mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
-                            .createMediaSource(MediaItem.fromUri(currentUrl));
-                }
-
-                player.setMediaSource(mediaSource);
-                setupPlayerListeners();
-                player.prepare();
-
-                if (savedPosition > 0) {
-                    player.seekTo(savedPosition);
-                }
-
-                int focusResult = audioManager.requestAudioFocus(focusRequest);
-                player.play();
-                setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
-                update();
-                if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
-
-                wasPlayingBeforeStall = false;
-                isReconnecting = false;
-            });
-        }
-
-        private void cancelReconnect() {
-            if (reconnectRunnable != null) {
-                handler.removeCallbacks(reconnectRunnable);
-                reconnectRunnable = null;
-            }
-            cancelStallWatchdog();
-        }
-
-        private void startStallWatchdog() {
-            cancelStallWatchdog();
-            wasPlayingBeforeStall = true;
-            // Save position for on-demand before we might lose it
-            if (!isLiveStream && player != null) {
-                long pos = player.getCurrentPosition();
-                if (pos > 0) savedPosition = pos;
-            }
-            stallWatchdog = () -> {
-                if (player != null && player.getPlaybackState() == Player.STATE_BUFFERING) {
-                    if (isLiveStream) {
-                        // If already reconnecting, don't start another cycle
-                        if (isReconnecting) {
-                            Log.d(TAG, "Stall watchdog fired but already reconnecting, skipping");
-                            return;
-                        }
-                        Log.d(TAG, "Stall watchdog fired after " + STALL_TIMEOUT_MS + "ms, attempting reconnect");
-                        reconnect();
-                    } else {
-                        // On-demand: just pause and wait for network
-                        Log.d(TAG, "Stall watchdog fired for on-demand, pausing at position " + savedPosition + "ms");
-                        setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
-                        update();
-                    }
-                }
-            };
-            handler.postDelayed(stallWatchdog, STALL_TIMEOUT_MS);
-        }
-
-        private void cancelStallWatchdog() {
-            if (stallWatchdog != null) {
-                handler.removeCallbacks(stallWatchdog);
-                stallWatchdog = null;
-            }
-        }
+        // --- Network recovery ---
 
         private void setupNetworkCallback() {
             connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            NetworkRequest request = new NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .build();
             networkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
-                public void onAvailable(Network network) {
-                    // Network came back
+                public void onLost(@NonNull Network network) {
                     handler.post(() -> {
-                        if (currentUrl != null && wasPlayingBeforeStall) {
-                            if (isLiveStream) {
-                                Log.d(TAG, "Network restored, rebuilding live stream player");
-                                cancelReconnect();
-                                reconnectAttempts = 0;
-                                isReconnecting = true;
-                                performReconnect(currentUrl);
-                            } else {
-                                // On-demand: rebuild and seek to saved position
-                                Log.d(TAG, "Network restored, resuming on-demand at position " + savedPosition + "ms");
-                                performOnDemandResume();
+                        // Only playback the user still wants: not paused, stopped or finished
+                        if (player != null && player.getPlayWhenReady()) {
+                            interruptedByNetwork = true;
+                            if (!isLiveStream) {
+                                long pos = player.getCurrentPosition();
+                                if (pos > 0) interruptedPosition = pos;
                             }
                         }
                     });
                 }
 
                 @Override
-                public void onLost(Network network) {
+                public void onAvailable(@NonNull Network network) {
                     handler.post(() -> {
-                        if (player != null && player.isPlaying()) {
-                            wasPlayingBeforeStall = true;
-                            if (!isLiveStream) {
-                                long pos = player.getCurrentPosition();
-                                if (pos > 0) savedPosition = pos;
-                            }
+                        if (!interruptedByNetwork) return;
+                        interruptedByNetwork = false;
+                        // Restart only playback the user still wants that hasn't recovered by itself
+                        if (player == null || !player.getPlayWhenReady() || currentUrl == null) return;
+                        int state = player.getPlaybackState();
+                        if (state == Player.STATE_IDLE || state == Player.STATE_BUFFERING) {
+                            long pos = player.getCurrentPosition();
+                            Log.d(TAG, "Network restored, restarting playback");
+                            startPlayer(isLiveStream ? 0 : (pos > 0 ? pos : interruptedPosition));
                         }
                     });
                 }
             };
-            connectivityManager.registerNetworkCallback(request, networkCallback);
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
         }
 
         private void unregisterNetworkCallback() {
@@ -1347,28 +1231,24 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             }
         }
 
+        /** Reports the position to JS every 500 ms while on-demand audio plays. */
         private void startUpdatingTime() {
             stopUpdatingTime();
             updateTimeTask = new Runnable() {
                 @Override
                 public void run() {
-                    if (player != null && player.isPlaying()) {
-                        long currentTime = player.getCurrentPosition();
-                        long duration = player.getDuration();
-                        // Follow the measured length, even over a duration the item came with
-                        if (measuredDuration() > 0) {
-                            setDuration(measuredDuration());
-                        }
-                        setPosition(currentTime);
+                    if (player == null) return;
+                    long currentTime = player.getCurrentPosition();
+                    // Follow the measured length, even over a duration the item came with
+                    if (measuredDuration() > 0) {
+                        setDuration(measuredDuration());
                         update();
-                        JSObject timeData = new JSObject()
-                                .put("currentTime", currentTime / 1000.0)
-                                .put("duration", duration == C.TIME_UNSET ? 0 : duration / 1000.0);
-                        if (plugin != null) plugin.onPlayerEvent("timeUpdate", timeData);
-                        handler.postDelayed(this, 500);
-                    } else {
-                        handler.postDelayed(this, 1000);
                     }
+                    JSObject timeData = new JSObject()
+                            .put("currentTime", currentTime / 1000.0)
+                            .put("duration", measuredDuration() / 1000.0);
+                    if (plugin != null) plugin.onPlayerEvent("timeUpdate", timeData);
+                    handler.postDelayed(this, 500);
                 }
             };
             handler.post(updateTimeTask);
@@ -1379,32 +1259,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 handler.removeCallbacks(updateTimeTask);
                 updateTimeTask = null;
             }
-        }
-
-        @Override
-        public void onAudioFocusChange(int focusChange) {
-            if (player == null) {
-                return;
-            }
-
-            handler.post(() -> {
-                switch (focusChange) {
-                    case AudioManager.AUDIOFOCUS_GAIN:
-                        player.setVolume(1.0f);
-                        if (resumeOnFocusLossTransient) {
-                            player.play();
-                        }
-                        break;
-                    case AudioManager.AUDIOFOCUS_LOSS:
-                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                        resumeOnFocusLossTransient = player.isPlaying();
-                        player.pause();
-                        break;
-                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                        player.setVolume(0.1f);
-                        break;
-                }
-            });
         }
 
         public void setVolume(float volume) {

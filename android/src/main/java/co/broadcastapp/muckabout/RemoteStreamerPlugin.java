@@ -4,8 +4,6 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -19,12 +17,6 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import org.json.JSONException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
-import java.net.URL;
 
 import co.broadcastapp.muckabout.library.PlayableItem;
 
@@ -34,6 +26,8 @@ public class RemoteStreamerPlugin extends Plugin {
     private boolean foregroundInitialized = false;
     /** The app's activity is stopped: in the background, or the screen is off. */
     private boolean activityStopped = false;
+    /** Whether the WebView was told it's visible while the activity is stopped. */
+    private boolean webViewKeptRunning = false;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -127,15 +121,13 @@ public class RemoteStreamerPlugin extends Plugin {
 
     @PluginMethod
     public void seekTo(PluginCall call) {
-        Long position = null;
-        try {
-            position = call.getData().getLong("position") * 1000; // s to ms
-        } catch (JSONException e) {
+        Double position = call.getDouble("position");
+        if (position == null || position.isNaN()) {
             call.reject("Can't parse position " + call.getData().toString());
             return;
         }
         if (service != null) {
-            service.seekTo(position);
+            service.seekTo(Math.round(position * 1000)); // s to ms
         }
         call.resolve();
     }
@@ -143,7 +135,7 @@ public class RemoteStreamerPlugin extends Plugin {
     @PluginMethod
     public void stop(PluginCall call) {
         if (service != null) {
-            service.stop(false);
+            service.stop();
         }
         call.resolve();
     }
@@ -181,26 +173,9 @@ public class RemoteStreamerPlugin extends Plugin {
             artist != null ? artist : "",
             album != null ? album : "",
             imageUrl == null || imageUrl.isEmpty() ? null : imageUrl,
-            imageUrl == null || imageUrl.isEmpty() ? null : getImage(imageUrl),
             durationMs
         );
         call.resolve();
-    }
-
-    private Bitmap getImage(String url) {
-        try {
-            URL imageUrl = new URL(url);
-            HttpURLConnection connection = (HttpURLConnection) imageUrl.openConnection();
-            connection.setDoInput(true);
-            connection.connect();
-            InputStream input = connection.getInputStream();
-            return BitmapFactory.decodeStream(input);
-        } catch (MalformedURLException mfue) {
-            Log.e("streamer", "bad image URL " + url);
-        } catch (IOException ioe) {
-            Log.e("streamer", "could not parse image " + url);
-        }
-        return null;
     }
 
     @PluginMethod
@@ -246,46 +221,34 @@ public class RemoteStreamerPlugin extends Plugin {
     }
 
     @Override
-    protected void handleOnDestroy() {
-        // Do not stop player here to allow background playback
-        super.handleOnDestroy();
-    }
-
-    @Override
     protected void handleOnStart() {
         super.handleOnStart();
         activityStopped = false;
+        webViewKeptRunning = false;
     }
 
     @Override
     protected void handleOnStop() {
         super.handleOnStop();
         activityStopped = true;
-        // The WebView hides itself as the activity stops: wait for that, then undo it
-        bridge.getWebView().postDelayed(this::keepWebViewRunning, 1000);
-    }
-
-    /** The playback service entered or left the foreground. Main thread. */
-    void onForegroundChanged(boolean foreground) {
-        if (!activityStopped) return;
-        if (foreground) {
-            keepWebViewRunning();
-        } else {
-            // Nothing plays any more: the WebView may sleep like any hidden one
-            bridge.getWebView().dispatchWindowVisibilityChanged(View.GONE);
-        }
+        webViewKeptRunning = false;
+        // The WebView hides itself as the activity stops: wait for that, then undo it if needed
+        bridge.getWebView().postDelayed(this::updateWebViewVisibility, 1000);
     }
 
     /**
      * Android stops the JavaScript of a WebView that isn't visible (screen off, app in the
      * background), even while the playback service keeps the app running. The app then can't
-     * react to the player, e.g. start the next item when one ends. While playback keeps the
-     * service in the foreground, tell the WebView it is still visible so its JS keeps running.
+     * react to the player, e.g. start the next item when one ends. While playback needs the app
+     * (see {@link RemoteStreamerService#needsWebView()}), tell the WebView it is still visible so
+     * its JS keeps running; otherwise let it sleep like any hidden one. Main thread.
      */
-    private void keepWebViewRunning() {
-        if (activityStopped && service != null && service.isInForeground()) {
-            bridge.getWebView().dispatchWindowVisibilityChanged(View.VISIBLE);
-        }
+    void updateWebViewVisibility() {
+        if (!activityStopped) return;
+        boolean keepRunning = service != null && service.needsWebView();
+        if (keepRunning == webViewKeptRunning) return;
+        webViewKeptRunning = keepRunning;
+        bridge.getWebView().dispatchWindowVisibilityChanged(keepRunning ? View.VISIBLE : View.GONE);
     }
 
     @PluginMethod

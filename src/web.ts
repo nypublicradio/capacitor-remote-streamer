@@ -20,10 +20,6 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     console.log("Setting now playing info", options)
   }
 
-  async enableCommandCenter (options: { seek: boolean }): Promise<void> {
-    console.log("Enabling lock screen control", options)
-  }
-
   async play (options: { url: string }): Promise<void> {
     if (this.audio) {
       this.audio.pause()
@@ -113,7 +109,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     this.stopTimeUpdates()
     this.intervalId = window.setInterval(() => {
       if (this.audio) {
-        this.notifyListeners("timeUpdate", { currentTime: this.audio.currentTime, duration: this.audio.duration || 0 })
+        this.notifyListeners("timeUpdate", { currentTime: this.audio.currentTime, duration: finiteOrZero(this.audio.duration) })
       }
     }, 1000)
   }
@@ -140,7 +136,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
       isPlaying: this.audio ? !this.audio.paused : false,
       currentUrl: this.audio ? this.audio.src : null,
       currentTime: this.audio ? this.audio.currentTime : 0,
-      duration: this.audio ? this.audio.duration || 0 : 0,
+      duration: this.audio ? finiteOrZero(this.audio.duration) : 0,
       isLiveStream: false,
       currentMediaId: null,
     }
@@ -157,7 +153,10 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
   private setupEventListeners () {
     if (this.audio) {
       this.audio.onplaying = () => this.notifyListeners("play", {})
-      this.audio.onpause = () => this.notifyListeners("pause", {})
+      // Browsers also pause at the end of an item: that's reported as stop {ended: true}
+      this.audio.onpause = () => {
+        if (!this.audio?.ended) this.notifyListeners("pause", {})
+      }
       this.audio.onended = () => this.notifyListeners("stop", { ended: true })
       this.audio.onerror = (e) =>
         this.notifyListeners("error", { message: `Audio error: ${e}` })
@@ -168,7 +167,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
         if (!this.hasFiredReady) {
           this.hasFiredReady = true
           this.notifyListeners("ready", {
-            duration: this.audio?.duration || 0,
+            duration: finiteOrZero(this.audio?.duration),
             currentTime: this.audio?.currentTime || 0,
             isLiveStream: false,
           })
@@ -176,4 +175,9 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
       }
     }
   }
+}
+
+/** A media element's duration, or 0 when unknown (NaN) or a live stream (Infinity). */
+function finiteOrZero (duration: number | undefined): number {
+  return duration !== undefined && Number.isFinite(duration) ? duration : 0
 }

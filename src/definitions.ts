@@ -76,15 +76,26 @@ export interface RemoteStreamerPlugin {
    * The end of an on-demand item is reported as `stop` with `{ ended: true }` on Android
    * and web, and as `ended` on iOS. The app keeps running in the background for a short
    * while after it, so it can start the next item.
+   *
+   * `enableCommandCenter` and `enableCommandCenterSeek` set up the iOS lock screen controls.
    */
   play (options: { url: string, enableCommandCenter?: boolean, enableCommandCenterSeek?: boolean }): Promise<void>
   pause (): Promise<void>
+  /** Resumes. When nothing is loaded (after `stop`, `releasePlayer` or the end), plays the last item again. */
   resume (): Promise<void>
+  /** `position` in seconds. */
   seekTo (options: { position: number }): Promise<void>
   stop (): Promise<void>
   setVolume (options: { volume: number }): Promise<void>
+  /** Web only. */
   setPlaybackRate (options: { rate: number }): Promise<void>
-  setNowPlayingInfo (options: { title: string; artist: string; album: string; duration: string; imageUrl: string; isLiveStream: boolean }): Promise<void>
+  /**
+   * Lock screen, notification and car display metadata for what's playing. `duration` (seconds)
+   * only stands in until the player has measured the audio. Native platforms load `imageUrl`
+   * in the background.
+   */
+  setNowPlayingInfo (options: { title: string; artist: string; album: string; duration: string | number; imageUrl: string; isLiveStream: boolean }): Promise<void>
+  /** Unloads the player, e.g. before playing something else. Reported as `stop`. */
   releasePlayer (): Promise<void>
   getCurrentState (): Promise<PlayerState>
   addListener (
@@ -116,6 +127,8 @@ export interface PauseEvent {
 
 export interface StopEvent {
   type: 'stop'
+  /** True at the end of an on-demand item (Android and web; iOS sends `ended`). */
+  ended?: boolean
 }
 
 export interface EndedEvent {
@@ -125,6 +138,7 @@ export interface EndedEvent {
 
 export interface ReadyEvent {
   type: 'ready'
+  /** Measured length in seconds; 0 for live streams or when unknown. */
   duration: number
   currentTime: number
   isLiveStream: boolean
@@ -136,11 +150,16 @@ export interface TimeUpdateEvent {
   duration: number
 }
 
+/** Playback waits for data (`isBuffering: true`), or plays again (`false`). Also sent while offline. */
 export interface BufferingEvent {
   type: 'buffering'
   isBuffering: boolean
 }
 
+/**
+ * The item can't be played. Not sent for problems the player recovers from by itself, such
+ * as losing the network: playback then resumes when a network comes back.
+ */
 export interface ErrorEvent {
   type: 'error'
   message: string
