@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Network
 import MediaPlayer
+import UIKit
 
 /// Player events, posted on `NotificationCenter.default`.
 /// The Capacitor plugin forwards them to JS; native integrations may observe them too.
@@ -53,6 +54,13 @@ public final class RemoteStreamer: NSObject {
     private var pathMonitor: NWPathMonitor?
     private var lastNetworkPath: NWPath?
 
+    /// Background audio only keeps the app running while something plays, so this holds
+    /// it open after an item ends until the next one plays. Main thread only.
+    private var endOfItemTask: UIBackgroundTaskIdentifier = .invalid
+
+    /// `bundle:<path>` names a file the host app bundles with its web code (`public/<path>`).
+    private static let bundleScheme = "bundle:"
+
     private override init() {
         super.init()
         setupInterruptionObserver()
@@ -84,10 +92,23 @@ public final class RemoteStreamer: NSObject {
     }
 
     /// Plays a URL requested by JS. JS sends display metadata separately via `setNowPlayingInfo`.
+    /// A `bundle:<path>` URL plays a file the host app bundles with its web code.
     func play(url: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        let isLive = url.contains(".m3u8")
-        currentItem = PlayableItem(url: url, isLive: isLive)
-        startPlayback(url: url, isLive: isLive, completion: completion)
+        guard let playableUrl = Self.playableUrl(url) else {
+            completion(.failure(NSError(domain: "RemoteStreamer", code: 0, userInfo: [NSLocalizedDescriptionKey: "Nothing to play at \(url)"])))
+            return
+        }
+        let isLive = playableUrl.contains(".m3u8")
+        currentItem = PlayableItem(url: playableUrl, isLive: isLive)
+        startPlayback(url: playableUrl, isLive: isLive, completion: completion)
+    }
+
+    /// `url`, or for `bundle:<path>` the bundled file's URL; nil when that file doesn't exist.
+    static func playableUrl(_ url: String) -> String? {
+        guard url.hasPrefix(bundleScheme) else { return url }
+        let path = url.dropFirst(bundleScheme.count).drop(while: { $0 == "/" })
+        let file = Bundle.main.bundleURL.appendingPathComponent("public").appendingPathComponent(String(path))
+        return FileManager.default.fileExists(atPath: file.path) ? file.absoluteString : nil
     }
 
     /// Updates the display metadata of the current item (JS `setNowPlayingInfo`).
@@ -229,9 +250,13 @@ public final class RemoteStreamer: NSObject {
         switch name {
         case .remoteStreamerPlay:
             nowPlaying.setPlaybackState(.playing)
+            // Playing again: background audio keeps the app running from here
+            endEndOfItemTask()
         case .remoteStreamerPause:
             nowPlaying.setPlaybackState(.paused)
         case .remoteStreamerStop:
+            // Not the end of the end-of-item task: JS releases the player before starting
+            // the next item, which must still be able to run
             nowPlaying.setPlaybackState(.stopped)
         default:
             break
@@ -659,7 +684,33 @@ public final class RemoteStreamer: NSObject {
     }
 
     @objc private func playerDidFinishPlaying(note: NSNotification) {
-        post(.remoteStreamerEnded, userInfo: ["ended": true])
+        // May arrive on any thread
+        DispatchQueue.main.async {
+            // A late notification for an item that has since been replaced isn't an end
+            guard let item = note.object as? AVPlayerItem, item === self.player?.currentItem else { return }
+            // Nothing plays now, so iOS could suspend the app (and its web view) before
+            // JS starts the next item: keep it running until something plays again
+            self.beginEndOfItemTask()
+            self.post(.remoteStreamerEnded, userInfo: ["ended": true])
+        }
+    }
+
+    /// Keeps the app running for a while (iOS allows about 30 s) after an item ends.
+    private func beginEndOfItemTask() {
+        endEndOfItemTask()
+        endOfItemTask = UIApplication.shared.beginBackgroundTask(withName: "RemoteStreamerNextItem") { [weak self] in
+            self?.endEndOfItemTask()
+        }
+    }
+
+    private func endEndOfItemTask() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.endEndOfItemTask() }
+            return
+        }
+        guard endOfItemTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(endOfItemTask)
+        endOfItemTask = .invalid
     }
 
     @objc private func playerFailedToPlayToEnd(note: NSNotification) {

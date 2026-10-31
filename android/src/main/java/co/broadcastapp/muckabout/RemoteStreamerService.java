@@ -52,6 +52,7 @@ import android.media.AudioManager;
 import com.getcapacitor.JSObject;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.io.IOException;
 import java.io.InputStream;
 import android.graphics.BitmapFactory;
 
@@ -140,6 +141,15 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         private ConnectivityManager connectivityManager;
         private AudioAttributes playerAudioAttributes;
         private ConnectivityManager.NetworkCallback networkCallback;
+
+        /** How long the service stays in the foreground after an item ends, so the app can start the next one. */
+        private static final long END_OF_ITEM_FOREGROUND_MS = 30000;
+        private boolean isForeground = false;
+        private final Runnable leaveForegroundAfterEnd = this::leaveForeground;
+
+        /** Assets the host app bundles with its web code; {@code bundle:<path>} URLs name a file in here. */
+        private static final String BUNDLE_SCHEME = "bundle:";
+        private static final String BUNDLED_WEB_ASSETS = "public/";
 
         /** What is currently loaded, with its display metadata. */
         private volatile PlayableItem currentItem;
@@ -312,7 +322,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
          */
         public void playItem(@NonNull PlayableItem item) {
             currentItem = item;
-            startForegroundPlayback();
+            ensureForeground();
             setTitle(item.title);
             setArtist(item.artist);
             setAlbum(item.album);
@@ -519,10 +529,13 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         }
 
         /**
-         * Promotes the service to the foreground for playback started natively, so it keeps
-         * playing (with a notification) when the app was never opened.
+         * Keeps the service in the foreground for playback, whoever started it, so it keeps
+         * playing (with a notification) while the app is in the background or was never
+         * opened. Cancels a pending end-of-item demotion. Call on the main thread.
          */
-        private void startForegroundPlayback() {
+        private void ensureForeground() {
+            handler.removeCallbacks(leaveForegroundAfterEnd);
+            if (isForeground) return;
             if (notificationBuilder == null) {
                 buildNotification(null);
             }
@@ -542,9 +555,18 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 } else {
                     startForeground(NOTIFICATION_ID, notificationBuilder.build());
                 }
+                isForeground = true;
             } catch (Exception e) {
                 Log.w(TAG, "Could not enter the foreground", e);
             }
+        }
+
+        /** Leaves the foreground and lets the service stop once nothing is bound to it. */
+        private void leaveForeground() {
+            handler.removeCallbacks(leaveForegroundAfterEnd);
+            isForeground = false;
+            stopForeground(true);
+            stopSelf();
         }
 
         /**
@@ -617,6 +639,8 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             if (executor != null) {
                 executor.shutdownNow();
             }
+            handler.removeCallbacks(leaveForegroundAfterEnd);
+            isForeground = false;
             stopForeground(true);
             //mediaSession.setActive(false);
             if (notificationManager != null) {
@@ -859,12 +883,37 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             this.update();
         }
 
-        /** Plays a URL requested by JS. JS sends display metadata separately via setNowPlayingInfo. */
-        public void play(String url) {
-            if (url == null) return;
-            boolean isLive = url.contains(".m3u8");
-            currentItem = PlayableItem.fromUrl(url, isLive);
-            playUrl(url, isLive);
+        /**
+         * Plays a URL requested by JS. JS sends display metadata separately via setNowPlayingInfo.
+         * A {@code bundle:<path>} URL plays a file the host app bundles with its web code.
+         *
+         * @return false when the URL names a bundled file that doesn't exist
+         */
+        public boolean play(String url) {
+            if (url == null) return false;
+            String playableUrl = playableUrl(url);
+            if (playableUrl == null) {
+                Log.w(TAG, "No bundled file for " + url);
+                return false;
+            }
+            boolean isLive = playableUrl.contains(".m3u8");
+            currentItem = PlayableItem.fromUrl(playableUrl, isLive);
+            // Every item, not just the first: the app may be in the background between items
+            handler.post(this::ensureForeground);
+            playUrl(playableUrl, isLive);
+            return true;
+        }
+
+        /** {@code url}, or for {@code bundle:<path>} the bundled asset's URI; null when that asset doesn't exist. */
+        @Nullable
+        private String playableUrl(@NonNull String url) {
+            if (!url.startsWith(BUNDLE_SCHEME)) return url;
+            String path = BUNDLED_WEB_ASSETS + url.substring(BUNDLE_SCHEME.length()).replaceFirst("^/+", "");
+            try (InputStream ignored = getAssets().open(path)) {
+                return "asset:///" + path;
+            } catch (IOException e) {
+                return null;
+            }
         }
 
         private void playUrl(final String url, final boolean isLive) {
@@ -986,8 +1035,14 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             setPosition(0);
             update();
             releasePlayer();
-            stopForeground(true);
-            stopSelf();
+            if (ended) {
+                // Stay in the foreground for a while: the app may be in the background with the
+                // screen off, and needs to run to start the next item before Android freezes it
+                handler.removeCallbacks(leaveForegroundAfterEnd);
+                handler.postDelayed(leaveForegroundAfterEnd, END_OF_ITEM_FOREGROUND_MS);
+            } else {
+                handler.post(this::leaveForeground);
+            }
         }
 
         public void releasePlayer() {
@@ -1037,8 +1092,10 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     if (isPlaying) {
                         if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
                     } else {
-                        // Don't fire pause during buffering — it's a transient state, not a user action
-                        if (player != null && player.getPlaybackState() != Player.STATE_BUFFERING) {
+                        // Don't fire pause during buffering — it's a transient state, not a user action.
+                        // Nor at the end of an item: that is reported as stop {ended: true}
+                        if (player != null && player.getPlaybackState() != Player.STATE_BUFFERING
+                                && player.getPlaybackState() != Player.STATE_ENDED) {
                             if (plugin != null) plugin.onPlayerEvent("pause", new JSObject());
                         }
                     }

@@ -33,10 +33,14 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
     this.hasFiredReady = false
     this.setupEventListeners() // Call setupEventListeners here
 
-    const urlWithoutParams = options.url.split("?")[0]
+    // bundle:<path> is a file bundled with the web code, i.e. served from /<path>
+    const url = options.url.startsWith("bundle:")
+      ? "/" + options.url.slice("bundle:".length).replace(/^\/+/, "")
+      : options.url
+    const urlWithoutParams = url.split("?")[0]
     if (Hls.isSupported() && urlWithoutParams.endsWith(".m3u8")) {
       this.hls = new Hls()
-      this.hls.loadSource(options.url)
+      this.hls.loadSource(url)
       this.hls.attachMedia(this.audio)
       this.hls.on(Hls.Events.MANIFEST_PARSED, async () => {
         if (this.audio) {
@@ -49,7 +53,7 @@ export class RemoteStreamerWeb extends WebPlugin implements RemoteStreamerPlugin
         }
       })
     } else {
-      this.audio.src = options.url
+      this.audio.src = url
       await this.audio.play()
       this.notifyListeners("play", {})
       this.startTimeUpdates()

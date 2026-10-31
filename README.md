@@ -135,6 +135,14 @@ The service creates the provider itself (public no-arg constructor), so this wor
 play(options: { url: string; enableCommandCenter?: boolean; enableCommandCenterSeek?: boolean; }) => Promise<void>
 ```
 
+Plays `url`. A `bundle:&lt;path&gt;` URL plays a file bundled with the app's web code
+(e.g. `bundle:audio/intro.mp3` for `public/audio/intro.mp3`); the promise rejects
+when that file doesn't exist.
+
+The end of an on-demand item is reported as `stop` with `{ ended: true }` on Android
+and web, and as `ended` on iOS. The app keeps running in the background for a short
+while after it, so it can start the next item.
+
 | Param         | Type                                                                                            |
 | ------------- | ----------------------------------------------------------------------------------------------- |
 | **`options`** | <code>{ url: string; enableCommandCenter?: boolean; enableCommandCenterSeek?: boolean; }</code> |

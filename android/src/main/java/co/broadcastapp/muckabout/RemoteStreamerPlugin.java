@@ -96,8 +96,11 @@ public class RemoteStreamerPlugin extends Plugin {
         }
 
         if (service != null) {
-            service.play(url);
-            call.resolve();
+            if (service.play(url)) {
+                call.resolve();
+            } else {
+                call.reject("Nothing to play at " + url);
+            }
         } else {
             call.reject("Service failed to start");
         }
