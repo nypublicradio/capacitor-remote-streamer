@@ -556,6 +556,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     startForeground(NOTIFICATION_ID, notificationBuilder.build());
                 }
                 isForeground = true;
+                if (plugin != null) plugin.onForegroundChanged(true);
             } catch (Exception e) {
                 Log.w(TAG, "Could not enter the foreground", e);
             }
@@ -567,6 +568,12 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             isForeground = false;
             stopForeground(true);
             stopSelf();
+            if (plugin != null) plugin.onForegroundChanged(false);
+        }
+
+        /** Whether playback keeps the service in the foreground (also briefly after an item ends). */
+        public boolean isInForeground() {
+            return isForeground;
         }
 
         /**
