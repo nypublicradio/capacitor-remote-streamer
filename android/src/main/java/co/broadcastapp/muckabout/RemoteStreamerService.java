@@ -6,7 +6,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
@@ -41,9 +40,13 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.Timeline;
 import androidx.media3.exoplayer.source.MediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
+import androidx.media3.exoplayer.hls.HlsManifest;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
+import androidx.media3.exoplayer.hls.playlist.HlsMediaPlaylist;
+import androidx.media3.exoplayer.hls.playlist.HlsPlaylistTracker;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.common.AudioAttributes;
@@ -64,8 +67,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import android.net.ConnectivityManager;
-import android.net.Network;
 
 import co.broadcastapp.muckabout.library.BrowseItem;
 import co.broadcastapp.muckabout.library.MediaLibraryProvider;
@@ -122,13 +123,14 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         private Runnable updateTimeTask;
         private boolean isLiveStream = false;
 
-        // Network recovery: playback the network cut off is rebuilt when a network comes back
         private String currentUrl;
-        private boolean interruptedByNetwork = false;
-        private long interruptedPosition = 0; // where on-demand playback was cut off
-        private ConnectivityManager connectivityManager;
         private AudioAttributes playerAudioAttributes;
-        private ConnectivityManager.NetworkCallback networkCallback;
+
+        /** The live HLS session's own media playlist: reloading {@link #currentUrl} would start a new session, often with a pre-roll. */
+        @Nullable
+        private HlsMediaPlaylist sessionPlaylist;
+        /** Recoveries since the session's playlist last advanced: the first rejoins the session, the second starts a new one. */
+        private int liveRecoveries = 0;
 
         /** How long the service stays in the foreground after an item ends, so the app can start the next one. */
         private static final long END_OF_ITEM_FOREGROUND_MS = 30000;
@@ -429,7 +431,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             super.onCreate();
             handler = new Handler(Looper.getMainLooper());
             settings = PlayerSettings.load(this);
-            setupNetworkCallback();
 
             // Initialize MediaSession immediately so media browsers (Android Auto) can
             // connect without waiting for the WebView plugin to bind.
@@ -631,7 +632,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         }
 
         public void destroy() {
-            unregisterNetworkCallback();
             releaseCurrentPlayer();
             if (executor != null) {
                 executor.shutdownNow();
@@ -650,7 +650,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         public void onDestroy() {
             // Nothing posted earlier (a pending leaveForeground, artwork, metadata) runs after this
             handler.removeCallbacksAndMessages(null);
-            unregisterNetworkCallback();
             releaseCurrentPlayer();
             if (libraryProvider != null) {
                 libraryProvider.onDestroy();
@@ -914,14 +913,12 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         private void playUrl(final String url, final boolean isLive) {
             handler.post(() -> {
                 currentUrl = url;
-                interruptedByNetwork = false;
-                interruptedPosition = 0;
                 this.isLiveStream = isLive;
                 if (isLive) {
                     setDuration(0);
                     setPosition(0);
                 }
-                startPlayer(0);
+                startPlayer();
                 setPlaybackState(PlaybackStateCompat.STATE_PLAYING);
                 // Live/on-demand may have changed, so the available actions and the
                 // published duration may have too
@@ -933,27 +930,31 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         }
 
         /**
-         * Replaces the player with a new one for {@link #currentUrl} and starts it, at
-         * {@code positionMs} for on-demand. ExoPlayer manages audio focus (pausing for a call,
-         * ducking under a navigation prompt) and pauses when headphones disconnect; the wake
-         * mode keeps streaming with the screen off. Main thread.
+         * Replaces the player with a new one for {@link #currentUrl} and starts it. ExoPlayer
+         * manages audio focus (pausing for a call, ducking under a navigation prompt) and pauses
+         * when headphones disconnect; the wake mode keeps streaming with the screen off. Main thread.
          */
-        private void startPlayer(long positionMs) {
+        private void startPlayer() {
             releaseCurrentPlayer();
             player = new ExoPlayer.Builder(this)
                     .setAudioAttributes(playerAudioAttributes, true)
                     .setHandleAudioBecomingNoisy(true)
                     .setWakeMode(C.WAKE_MODE_NETWORK)
                     .build();
-            MediaItem mediaItem = MediaItem.fromUri(currentUrl);
-            MediaSource mediaSource = currentUrl.contains(".m3u8")
-                    ? new HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
-                    : new ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem);
-            player.setMediaSource(mediaSource);
+            sessionPlaylist = null;
+            liveRecoveries = 0;
+            player.setMediaSource(mediaSource(currentUrl));
             setupPlayerListeners();
             player.prepare();
-            if (positionMs > 0) player.seekTo(positionMs);
             player.play();
+        }
+
+        private MediaSource mediaSource(String url) {
+            MediaItem mediaItem = MediaItem.fromUri(url);
+            ConnectionRetryPolicy retryPolicy = new ConnectionRetryPolicy();
+            return url.contains(".m3u8")
+                    ? new HlsMediaSource.Factory(dataSourceFactory).setLoadErrorHandlingPolicy(retryPolicy).createMediaSource(mediaItem)
+                    : new ProgressiveMediaSource.Factory(dataSourceFactory).setLoadErrorHandlingPolicy(retryPolicy).createMediaSource(mediaItem);
         }
 
         /** Main thread. */
@@ -968,8 +969,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         public void pause() {
             handler.post(() -> {
                 if (player == null) return;
-                // The user paused: don't resume when the network comes back
-                interruptedByNetwork = false;
                 player.pause();
                 setPlaybackState(PlaybackStateCompat.STATE_PAUSED);
                 update();
@@ -1028,7 +1027,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
 
         /** Stops and unloads, at the end of an item ({@code ended}) or on request. Main thread. */
         private void stop(final boolean ended) {
-            interruptedByNetwork = false;
             if (plugin != null) plugin.onPlayerEvent("stop", new JSObject().put("ended", ended));
             releaseCurrentPlayer();
             setPlaybackState(PlaybackStateCompat.STATE_STOPPED);
@@ -1050,7 +1048,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         public void releasePlayer() {
             handler.post(() -> {
                 if (player == null) return;
-                interruptedByNetwork = false;
                 if (plugin != null) plugin.onPlayerEvent("stop", new JSObject());
                 releaseCurrentPlayer();
                 setPlaybackState(PlaybackStateCompat.STATE_STOPPED);
@@ -1130,8 +1127,6 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 @Override
                 public void onIsPlayingChanged(boolean isPlaying) {
                     if (isPlaying) {
-                        // Playing again, so whatever the network did is over
-                        interruptedByNetwork = false;
                         if (!isLiveStream) startUpdatingTime();
                         if (plugin != null) plugin.onPlayerEvent("play", new JSObject());
                     } else {
@@ -1145,25 +1140,18 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 }
 
                 @Override
+                public void onTimelineChanged(@NonNull Timeline timeline, int reason) {
+                    if (player.getCurrentManifest() instanceof HlsManifest manifest) {
+                        onSessionPlaylist(manifest.mediaPlaylist);
+                    }
+                    Object m = player.getCurrentManifest(); // DBGSESSION
+                    if (m instanceof androidx.media3.exoplayer.hls.HlsManifest) { androidx.media3.exoplayer.hls.playlist.HlsMediaPlaylist p = ((androidx.media3.exoplayer.hls.HlsManifest) m).mediaPlaylist; Log.d(TAG, "DBGSESSION seq=" + p.mediaSequence + " n=" + p.segments.size() + " last=" + (p.segments.isEmpty() ? "" : p.segments.get(p.segments.size() - 1).url) + " uri=" + p.baseUri); } // DBGSESSION
+                }
+
+                @Override
                 public void onPlayerError(@NonNull PlaybackException error) {
-                    if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
-                        // Fell behind a live stream's window (e.g. after a long pause): rejoin it live
-                        player.seekToDefaultPosition();
-                        player.prepare();
-                        return;
-                    }
-                    if (isNetworkError(error) && (interruptedByNetwork || !hasNetwork())) {
-                        // Offline: the network callback restarts playback when a network comes back
-                        interruptedByNetwork = true;
-                        if (!isLiveStream) {
-                            long pos = player.getCurrentPosition();
-                            if (pos > 0) interruptedPosition = pos;
-                        }
-                        setPlaybackState(PlaybackStateCompat.STATE_BUFFERING);
-                        update();
-                        if (plugin != null) plugin.onPlayerEvent("buffering", new JSObject().put("isBuffering", true));
-                        return;
-                    }
+                    Log.d(TAG, "DBGSESSION onPlayerError " + error.getErrorCodeName() + " cause=" + error.getCause()); // DBGSESSION
+                    if (recoverLiveSession(error)) return;
                     setPlaybackState(PlaybackStateCompat.STATE_ERROR);
                     update();
                     // Nothing plays: give up the foreground unless something plays again soon
@@ -1173,62 +1161,44 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             });
         }
 
-        private static boolean isNetworkError(PlaybackException error) {
-            return error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
-                    || error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT;
+        /** Main thread. */
+        private void onSessionPlaylist(HlsMediaPlaylist playlist) {
+            if (sessionPlaylist != null && playlist.isNewerThan(sessionPlaylist)) liveRecoveries = 0;
+            sessionPlaylist = playlist;
         }
 
-        private boolean hasNetwork() {
-            return connectivityManager != null && connectivityManager.getActiveNetwork() != null;
-        }
-
-        // --- Network recovery ---
-
-        private void setupNetworkCallback() {
-            connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            networkCallback = new ConnectivityManager.NetworkCallback() {
-                @Override
-                public void onLost(@NonNull Network network) {
-                    handler.post(() -> {
-                        // Only playback the user still wants: not paused, stopped or finished
-                        if (player != null && player.getPlayWhenReady()) {
-                            interruptedByNetwork = true;
-                            if (!isLiveStream) {
-                                long pos = player.getCurrentPosition();
-                                if (pos > 0) interruptedPosition = pos;
-                            }
-                        }
-                    });
-                }
-
-                @Override
-                public void onAvailable(@NonNull Network network) {
-                    handler.post(() -> {
-                        if (!interruptedByNetwork) return;
-                        interruptedByNetwork = false;
-                        // Restart only playback the user still wants that hasn't recovered by itself
-                        if (player == null || !player.getPlayWhenReady() || currentUrl == null) return;
-                        int state = player.getPlaybackState();
-                        if (state == Player.STATE_IDLE || state == Player.STATE_BUFFERING) {
-                            long pos = player.getCurrentPosition();
-                            Log.d(TAG, "Network restored, restarting playback");
-                            startPlayer(isLiveStream ? 0 : (pos > 0 ? pos : interruptedPosition));
-                        }
-                    });
-                }
-            };
-            connectivityManager.registerDefaultNetworkCallback(networkCallback);
-        }
-
-        private void unregisterNetworkCallback() {
-            if (networkCallback != null && connectivityManager != null) {
-                try {
-                    connectivityManager.unregisterNetworkCallback(networkCallback);
-                } catch (IllegalArgumentException e) {
-                    // Already unregistered
-                }
-                networkCallback = null;
+        /**
+         * Recovers live HLS playback that fell out of its session (e.g. after a long outage): first
+         * rejoins the session at its live edge, then starts a new one. Main thread.
+         *
+         * @return false when the caller has to report the error
+         */
+        private boolean recoverLiveSession(PlaybackException error) {
+            String url;
+            if (liveRecoveries == 0 && sessionPlaylist != null && fellOutOfLiveSession(error)) {
+                url = sessionPlaylist.baseUri;
+                Log.d(TAG, "Rejoining the stream session live after " + error.getErrorCodeName());
+            } else if (liveRecoveries == 1) {
+                url = currentUrl;
+                Log.d(TAG, "Could not rejoin the stream session, starting a new one: " + error.getErrorCodeName());
+            } else {
+                return false;
             }
+            liveRecoveries++;
+            // Only a newer playlist from the new source shows the stream advancing again
+            sessionPlaylist = null;
+            player.setMediaSource(mediaSource(url));
+            player.prepare();
+            return true;
+        }
+
+        /** Fell behind the live window, or the server restarted the session's playlist (e.g. after a long outage). */
+        private static boolean fellOutOfLiveSession(PlaybackException error) {
+            Throwable cause = error.getCause();
+            return error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW
+                    // Media3 reports a restarted playlist as stuck when the old one was still near its start
+                    || cause instanceof HlsPlaylistTracker.PlaylistResetException
+                    || cause instanceof HlsPlaylistTracker.PlaylistStuckException;
         }
 
         /** Reports the position to JS every 500 ms while on-demand audio plays. */

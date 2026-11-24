@@ -52,10 +52,13 @@ public final class RemoteStreamer: NSObject {
     private var hasFiredReady = false // track whether 'ready' event has been fired for current play
     /// Whether audio was playing when an interruption (e.g. a call) began.
     private var wasPlayingBeforeInterruption = false
+    private var sessionPlaylistUrl: URL? // the live stream session's own media playlist, from the access log
+    private var rejoinedSession = false // whether a rebuild already tried sessionPlaylistUrl since playback last worked
 
     // Network monitoring
     private var pathMonitor: NWPathMonitor?
     private var lastNetworkPath: NWPath?
+    private var networkIsDown = false // updated on the main thread
 
     /// Background audio only keeps the app running while something plays, so this holds
     /// it open after an item ends until the next one plays. Main thread only.
@@ -126,6 +129,8 @@ public final class RemoteStreamer: NSObject {
         isReconnecting = false
         wasPlayingBeforeStall = false
         savedPosition = 0
+        sessionPlaylistUrl = nil
+        rejoinedSession = false
 
         // Remove old observers BEFORE replacing the player to prevent stale notifications
         removeObservers()
@@ -170,7 +175,7 @@ public final class RemoteStreamer: NSObject {
             return
         }
         // For live streams: if player is failed, stalled, or nil, rebuild from scratch
-        if isLiveStream, let url = currentUrl {
+        if isLiveStream, currentUrl != nil {
             let needsRebuild = (player == nil)
                 || (player?.status == .failed)
                 || (player?.currentItem?.status == .failed)
@@ -180,7 +185,7 @@ public final class RemoteStreamer: NSObject {
                 cancelReconnect()
                 reconnectAttempts = 0
                 isReconnecting = true
-                performReconnect(url: url)
+                performReconnect()
                 return
             }
         }
@@ -393,6 +398,9 @@ public final class RemoteStreamer: NSObject {
             guard let self = self else { return }
             let hadNetwork = self.lastNetworkPath?.status == .satisfied
             self.lastNetworkPath = path
+            DispatchQueue.main.async {
+                self.networkIsDown = path.status != .satisfied
+            }
 
             // Network just came back — if we're stalled or failed on a live stream, reconnect
             if path.status == .satisfied && hadNetwork == false {
@@ -405,14 +413,14 @@ public final class RemoteStreamer: NSObject {
     }
 
     private func handleNetworkRestored() {
-        guard let url = currentUrl, wasPlayingBeforeStall else { return }
+        guard currentUrl != nil, wasPlayingBeforeStall else { return }
 
         if isLiveStream {
             print("RemoteStreamer: Network restored, rebuilding live stream player")
             cancelReconnect()
             reconnectAttempts = 0
             isReconnecting = true
-            performReconnect(url: url)
+            performReconnect()
         } else {
             // On-demand: rebuild and seek to saved position
             print("RemoteStreamer: Network restored, resuming on-demand at position \(savedPosition)s")
@@ -423,7 +431,11 @@ public final class RemoteStreamer: NSObject {
     // MARK: - Reconnection
 
     private func reconnect() {
-        guard let url = currentUrl, isLiveStream else { return }
+        guard currentUrl != nil, isLiveStream else { return }
+        if networkIsDown {
+            waitForNetwork()
+            return
+        }
         guard reconnectAttempts < maxReconnectAttempts else {
             print("RemoteStreamer: Max reconnect attempts (\(maxReconnectAttempts)) reached, giving up")
             isReconnecting = false
@@ -444,17 +456,35 @@ public final class RemoteStreamer: NSObject {
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self = self, self.isReconnecting else { return }
-            self.performReconnect(url: url)
+            self.performReconnect()
         }
         reconnectTimer = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
-    private func performReconnect(url: String) {
+    /// Offline: keep the player and wait for `handleNetworkRestored` instead of spending reconnect attempts.
+    private func waitForNetwork() {
+        wasPlayingBeforeStall = true
+        // An offline failure says nothing about whether the session still works
+        rejoinedSession = false
+        post(.remoteStreamerBuffering, userInfo: ["isBuffering": true])
+    }
+
+    private func performReconnect() {
         // Tear down the old player completely
         cleanupFailedPlayer()
 
-        guard let streamUrl = URL(string: url) else { return }
+        // Loading currentUrl again starts a new stream session, often with a pre-roll ad, so rejoin the old one first
+        let url: URL?
+        if !rejoinedSession, let sessionUrl = sessionPlaylistUrl {
+            rejoinedSession = true
+            print("RemoteStreamer: Rejoining the stream session")
+            url = sessionUrl
+        } else {
+            print("RemoteStreamer: Starting a new stream session")
+            url = currentUrl.flatMap { URL(string: $0) }
+        }
+        guard let streamUrl = url else { return }
 
         let playerItem = makePlayerItem(url: streamUrl)
         player = AVPlayer(playerItem: playerItem)
@@ -548,6 +578,7 @@ public final class RemoteStreamer: NSObject {
     private func setupObservers(playerItem: AVPlayerItem) {
         NotificationCenter.default.addObserver(self, selector: #selector(playerDidFinishPlaying), name: .AVPlayerItemDidPlayToEndTime, object: playerItem)
         NotificationCenter.default.addObserver(self, selector: #selector(playerFailedToPlayToEnd), name: .AVPlayerItemFailedToPlayToEndTime, object: playerItem)
+        NotificationCenter.default.addObserver(self, selector: #selector(playerNewAccessLogEntry), name: .AVPlayerItemNewAccessLogEntry, object: playerItem)
 
         // Loading failures (a bad URL, a server error, no network) are reported on the item
         itemStatusObserver = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
@@ -593,6 +624,7 @@ public final class RemoteStreamer: NSObject {
                 self.reconnectAttempts = 0
                 self.isReconnecting = false
                 self.wasPlayingBeforeStall = false
+                self.rejoinedSession = false
 
                 // For live streams, AVPlayerItem.duration is indefinite (NaN) so the
                 // durationObserver will never fire.  Emit the 'ready' event here once
@@ -668,13 +700,13 @@ public final class RemoteStreamer: NSObject {
     /// (`handleNetworkRestored`); a live stream retries; anything else is an error. Main thread.
     private func itemFailed(_ error: Error?) {
         print("RemoteStreamer: Item failed: \(error?.localizedDescription ?? "unknown")")
-        if Self.isOffline(error) {
+        // A live stream that times out while the network is up gets no restore event, so it retries instead
+        if Self.isOffline(error) && (networkIsDown || !isLiveStream) {
             if !isLiveStream, let currentTime = player?.currentTime() {
                 let pos = currentTime.seconds
                 if pos > 0 && pos.isFinite { savedPosition = pos }
             }
-            wasPlayingBeforeStall = true
-            post(.remoteStreamerBuffering, userInfo: ["isBuffering": true])
+            waitForNetwork()
         } else if isLiveStream && reconnectAttempts < maxReconnectAttempts {
             reconnect()
         } else {
@@ -700,6 +732,7 @@ public final class RemoteStreamer: NSObject {
     private func removeObservers() {
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: player?.currentItem)
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: player?.currentItem)
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemNewAccessLogEntry, object: player?.currentItem)
         playerTimeControlStatusObserver?.invalidate()
         playerStatusObserver?.invalidate()
         itemStatusObserver?.invalidate()
@@ -768,6 +801,17 @@ public final class RemoteStreamer: NSObject {
         guard endOfItemTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(endOfItemTask)
         endOfItemTask = .invalid
+    }
+
+    @objc private func playerNewAccessLogEntry(note: NSNotification) {
+        // May arrive on any thread
+        DispatchQueue.main.async {
+            guard self.isLiveStream, let item = note.object as? AVPlayerItem, item === self.player?.currentItem,
+                  let uri = item.accessLog()?.events.last?.uri, let url = URL(string: uri),
+                  url != self.sessionPlaylistUrl else { return }
+            self.sessionPlaylistUrl = url
+            print("RemoteStreamer: Stream session playlist \(url)")
+        }
     }
 
     @objc private func playerFailedToPlayToEnd(note: NSNotification) {
