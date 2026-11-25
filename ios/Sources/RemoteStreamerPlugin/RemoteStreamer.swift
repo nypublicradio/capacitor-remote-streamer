@@ -2,24 +2,44 @@ import Foundation
 import AVFoundation
 import Network
 import MediaPlayer
+import UIKit
 
-class RemoteStreamer: NSObject {
-    /// Shared singleton so both the Capacitor plugin and CarPlay can use the same player
-    static let shared = RemoteStreamer()
+/// Player events, posted on `NotificationCenter.default`.
+/// The Capacitor plugin forwards them to JS; native integrations may observe them too.
+public extension Notification.Name {
+    static let remoteStreamerPlay = Notification.Name("RemoteStreamerPlay")
+    static let remoteStreamerPause = Notification.Name("RemoteStreamerPause")
+    static let remoteStreamerStop = Notification.Name("RemoteStreamerStop")
+    static let remoteStreamerEnded = Notification.Name("RemoteStreamerEnded")
+    static let remoteStreamerTimeUpdate = Notification.Name("RemoteStreamerTimeUpdate")
+    /// `userInfo["isBuffering"]` is true while playback waits for data, false once it plays.
+    static let remoteStreamerBuffering = Notification.Name("RemoteStreamerBuffering")
+    static let remoteStreamerReady = Notification.Name("RemoteStreamerReady")
+    /// The item can't be played. `userInfo["message"]` describes why.
+    static let remoteStreamerError = Notification.Name("RemoteStreamerError")
+    /// Native code started an item with `play(item:)`. `userInfo` is the JS event payload.
+    static let remoteStreamerPlayFromMediaId = Notification.Name("RemoteStreamerPlayFromMediaId")
+}
+
+public final class RemoteStreamer: NSObject {
+    /// One player for the whole app, shared by the Capacitor plugin and any
+    /// native integration (e.g. CarPlay).
+    public static let shared = RemoteStreamer()
+
+    /// What is currently loaded, with its display metadata.
+    public private(set) var currentItem: PlayableItem?
+
+    private let nowPlaying = NowPlayingController()
 
     private var player: AVPlayer?
     private var timeObserver: Any?
-    private var playbackBufferEmptyObserver: NSKeyValueObservation?
-    private var playbackBufferFullObserver: NSKeyValueObservation?
-    private var playbackLikelyToKeepUpObserver: NSKeyValueObservation?
     private var playerTimeControlStatusObserver: NSKeyValueObservation?
     private var playerStatusObserver: NSKeyValueObservation?
+    private var itemStatusObserver: NSKeyValueObservation?
     private var durationObserver: NSKeyValueObservation?
 
     // Reconnection state
     private var currentUrl: String?
-    /// The mediaId if playback was started from CarPlay browse tree
-    var currentMediaId: String?
     private var isLiveStream = false
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 3
@@ -30,67 +50,132 @@ class RemoteStreamer: NSObject {
     private let stallTimeoutSeconds: Double = 30.0
     private var savedPosition: Double = 0 // saved playback position for on-demand recovery
     private var hasFiredReady = false // track whether 'ready' event has been fired for current play
+    /// Whether audio was playing when an interruption (e.g. a call) began.
+    private var wasPlayingBeforeInterruption = false
+    private var sessionPlaylistUrl: URL? // the live stream session's own media playlist, from the access log
+    private var rejoinedSession = false // whether a rebuild already tried sessionPlaylistUrl since playback last worked
 
     // Network monitoring
     private var pathMonitor: NWPathMonitor?
     private var lastNetworkPath: NWPath?
-    
-    override init() {
+    private var networkIsDown = false // updated on the main thread
+
+    /// Background audio only keeps the app running while something plays, so this holds
+    /// it open after an item ends until the next one plays. Main thread only.
+    private var endOfItemTask: UIBackgroundTaskIdentifier = .invalid
+
+    /// `bundle:<path>` names a file the host app bundles with its web code (`public/<path>`).
+    private static let bundleScheme = "bundle:"
+
+    private override init() {
         super.init()
         setupInterruptionObserver()
         setupNetworkMonitor()
         setupRemoteCommandCenter()
     }
-    
-    /// Whether seek controls (skip forward/backward) are enabled
-    private var seekEnabled = false
 
     /// Flag to suppress the initial .paused KVO notification when creating a new player
     private var suppressPauseNotification = false
 
+    // MARK: - Public playback API
+
+    /// Plays an item started from native code (for example a CarPlay or Android Auto
+    /// integration). Shows its metadata in Now Playing, sets up the lock-screen
+    /// controls and tells JS via the `playFromMediaId` event.
+    public func play(item: PlayableItem) {
+        currentItem = item
+        enableCommandCenter(seekEnabled: !item.isLive)
+        nowPlaying.begin(item, defaultTitle: PlayerSettings.shared.defaultTitle)
+        startPlayback(url: item.url, isLive: item.isLive) { result in
+            if case .failure(let error) = result {
+                print("RemoteStreamer: play(item:) failed: \(error.localizedDescription)")
+            }
+        }
+        post(.remoteStreamerPlayFromMediaId, userInfo: item.eventPayload)
+    }
+
+    /// Plays a URL requested by JS. JS sends display metadata separately via `setNowPlayingInfo`.
+    /// A `bundle:<path>` URL plays a file the host app bundles with its web code.
     func play(url: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let playableUrl = Self.playableUrl(url) else {
+            completion(.failure(NSError(domain: "RemoteStreamer", code: 0, userInfo: [NSLocalizedDescriptionKey: "Nothing to play at \(url)"])))
+            return
+        }
+        let isLive = playableUrl.contains(".m3u8")
+        currentItem = PlayableItem(url: playableUrl, isLive: isLive)
+        startPlayback(url: playableUrl, isLive: isLive, completion: completion)
+    }
+
+    /// `url`, or for `bundle:<path>` the bundled file's URL; nil when that file doesn't exist.
+    static func playableUrl(_ url: String) -> String? {
+        guard url.hasPrefix(bundleScheme) else { return url }
+        let path = url.dropFirst(bundleScheme.count).drop(while: { $0 == "/" })
+        let file = Bundle.main.bundleURL.appendingPathComponent("public").appendingPathComponent(String(path))
+        return FileManager.default.fileExists(atPath: file.path) ? file.absoluteString : nil
+    }
+
+    /// Updates the display metadata of the current item (JS `setNowPlayingInfo`).
+    func setNowPlayingMetadata(title: String, artist: String, album: String, durationSeconds: Double, artworkUrl: String?, isLive: Bool) {
+        let base = currentItem ?? PlayableItem(url: currentUrl ?? "", isLive: isLive)
+        let item = base.withMetadata(title: title, artist: artist, album: album, artworkUrl: artworkUrl, isLive: isLive, durationSeconds: durationSeconds)
+        currentItem = item
+        nowPlaying.update(item, defaultTitle: PlayerSettings.shared.defaultTitle)
+    }
+
+    private func startPlayback(url: String, isLive: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
         // Cancel any pending reconnect
         cancelReconnect()
         reconnectAttempts = 0
         isReconnecting = false
         wasPlayingBeforeStall = false
+        savedPosition = 0
+        sessionPlaylistUrl = nil
+        rejoinedSession = false
 
         // Remove old observers BEFORE replacing the player to prevent stale notifications
         removeObservers()
         suppressPauseNotification = true
 
         currentUrl = url
-        isLiveStream = url.contains(".m3u8")
+        isLiveStream = isLive
         hasFiredReady = false
 
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
-        let osVersion = UIDevice.current.systemVersion
-        let deviceModel = UIDevice.current.model
-        let headers = ["User-Agent": "WNYC-App/iOS \(appVersion); \(deviceModel); iOS \(osVersion)"]
-        guard let url = URL(string: url) else {
+        guard let streamUrl = URL(string: url) else {
             completion(.failure(NSError(domain: "RemoteStreamer", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
             return
         }
-        
-        let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
-        let playerItem = AVPlayerItem(asset: asset)
-        
+
+        let playerItem = makePlayerItem(url: streamUrl)
         player = AVPlayer(playerItem: playerItem)
         setupAudioSession()
         setupObservers(playerItem: playerItem)
-        
+
         player?.playImmediately(atRate: 1.0)
         completion(.success(()))
     }
-    
-    func pause() {
+
+    /// Builds a player item that sends the host-configured User-Agent.
+    private func makePlayerItem(url: URL) -> AVPlayerItem {
+        let headers = ["User-Agent": PlayerSettings.shared.userAgent]
+        let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+        return AVPlayerItem(asset: asset)
+    }
+
+    public func pause() {
         cancelReconnect()
+        // The user paused: don't resume when the network comes back
+        wasPlayingBeforeStall = false
         player?.pause()
     }
-    
-    func resume() {
+
+    public func resume() {
+        // Nothing loaded (stopped, or released between items): play the last item again
+        if player?.currentItem == nil, let item = currentItem {
+            restart(item)
+            return
+        }
         // For live streams: if player is failed, stalled, or nil, rebuild from scratch
-        if isLiveStream, let url = currentUrl {
+        if isLiveStream, currentUrl != nil {
             let needsRebuild = (player == nil)
                 || (player?.status == .failed)
                 || (player?.currentItem?.status == .failed)
@@ -100,7 +185,7 @@ class RemoteStreamer: NSObject {
                 cancelReconnect()
                 reconnectAttempts = 0
                 isReconnecting = true
-                performReconnect(url: url)
+                performReconnect()
                 return
             }
         }
@@ -116,19 +201,43 @@ class RemoteStreamer: NSObject {
                 return
             }
         }
+        // An on-demand item that played to its end starts over
+        if !isLiveStream, Self.reachedEnd(player?.currentItem) {
+            player?.seek(to: .zero)
+        }
         player?.play()
     }
-    
-    func stop() {
+
+    /// Plays `item` again from the start, with its Now Playing info (a stop clears that).
+    private func restart(_ item: PlayableItem) {
+        enableCommandCenter(seekEnabled: !item.isLive)
+        nowPlaying.begin(item, defaultTitle: PlayerSettings.shared.defaultTitle)
+        startPlayback(url: item.url, isLive: item.isLive) { result in
+            if case .failure(let error) = result {
+                print("RemoteStreamer: restart failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    public func stop() {
         cancelReconnect()
         reconnectAttempts = 0
         isReconnecting = false
+        wasPlayingBeforeStall = false
+        savedPosition = 0
+        // Observers first, so that stopping isn't also reported as a pause
+        removeObservers()
         player?.pause()
         player?.replaceCurrentItem(with: nil)
-        removeObservers()
-        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerStop"), object: nil)
+        post(.remoteStreamerStop)
     }
-    
+
+    /// Whether the item played to its end (reported as `ended`, not as a pause).
+    private static func reachedEnd(_ item: AVPlayerItem?) -> Bool {
+        guard let item = item, item.duration.isNumeric else { return false }
+        return CMTimeCompare(item.currentTime(), item.duration) >= 0
+    }
+
     func seekTo(position: Double) {
         let time = CMTime(seconds: position, preferredTimescale: 1000)
         player?.seek(to: time)
@@ -140,41 +249,62 @@ class RemoteStreamer: NSObject {
         player?.seek(to: newTime)
     }
 
-    func isPlaying() -> Bool {
+    public func isPlaying() -> Bool {
         return player?.timeControlStatus == .playing
     }
 
     func getCurrentState() -> [String: Any] {
         let currentTime = player?.currentTime().seconds ?? 0
-        let duration = player?.currentItem?.duration.seconds ?? 0
+        let playerDuration = player?.currentItem?.duration.seconds ?? 0
+        var duration = (playerDuration.isFinite && playerDuration > 0) ? playerDuration : 0
         var state: [String: Any] = [
             "isPlaying": isPlaying(),
             "currentUrl": currentUrl as Any,
             "currentTime": currentTime.isFinite ? currentTime : 0,
-            "duration": (duration.isFinite && duration > 0) ? duration : 0,
             "isLiveStream": isLiveStream,
-            "currentMediaId": currentMediaId as Any
+            "currentMediaId": currentItem?.mediaId as Any
         ]
-        // Include cached metadata from CarPlay browse tree
-        if #available(iOS 14.0, *), let mediaId = currentMediaId,
-           let metadata = CarPlayMediaManager.shared.getMetadata(for: mediaId) {
-            state["title"] = metadata.title
-            state["artist"] = metadata.subtitle
-            state["imageUrl"] = metadata.imageUrl
-            state["duration"] = metadata.durationSeconds
-            if let streamUrl = CarPlayMediaManager.shared.getStreamUrl(for: mediaId) {
-                state["streamUrl"] = streamUrl
+        // Metadata of the current item, so the app can rebuild its UI when it
+        // opens after playback was started natively (e.g. from the car).
+        if let item = currentItem {
+            if duration == 0 && item.durationSeconds > 0 {
+                duration = item.durationSeconds
             }
+            if !item.title.isEmpty { state["title"] = item.title }
+            if !item.artist.isEmpty { state["artist"] = item.artist }
+            if let artworkUrl = item.artworkUrl { state["imageUrl"] = artworkUrl }
+            state["streamUrl"] = item.reportedUrl
         }
+        state["duration"] = duration
         return state
+    }
+
+    // MARK: - Events
+
+    /// Posts a player event and keeps Now Playing in step with it, so the lock
+    /// screen and CarPlay stay correct even when no Capacitor plugin is listening.
+    private func post(_ name: Notification.Name, userInfo: [AnyHashable: Any]? = nil) {
+        switch name {
+        case .remoteStreamerPlay:
+            nowPlaying.setPlaybackState(.playing)
+            // Playing again: background audio keeps the app running from here
+            endEndOfItemTask()
+        case .remoteStreamerPause:
+            nowPlaying.setPlaybackState(.paused)
+        case .remoteStreamerStop:
+            // Not the end of the end-of-item task: JS releases the player before starting
+            // the next item, which must still be able to run
+            nowPlaying.setPlaybackState(.stopped)
+        default:
+            break
+        }
+        NotificationCenter.default.post(name: name, object: nil, userInfo: userInfo)
     }
 
     // MARK: - Remote Command Center (single owner)
 
-    /// Enable or disable seek controls. Called by the plugin/CarPlayMediaManager
-    /// based on whether the content is live or on-demand.
+    /// Enable or disable seek controls based on whether the content is live or on-demand.
     func setSeekEnabled(_ enabled: Bool) {
-        seekEnabled = enabled
         let commandCenter = MPRemoteCommandCenter.shared()
         commandCenter.skipForwardCommand.isEnabled = enabled
         commandCenter.skipBackwardCommand.isEnabled = enabled
@@ -206,19 +336,13 @@ class RemoteStreamer: NSObject {
 
         commandCenter.playCommand.addTarget { [weak self] _ in
             self?.resume()
-            MPNowPlayingInfoCenter.default().playbackState = .playing
-            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            self?.nowPlaying.setPlaybackState(.playing)
             return .success
         }
 
         commandCenter.pauseCommand.addTarget { [weak self] _ in
             self?.pause()
-            MPNowPlayingInfoCenter.default().playbackState = .paused
-            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            self?.nowPlaying.setPlaybackState(.paused)
             return .success
         }
 
@@ -226,16 +350,10 @@ class RemoteStreamer: NSObject {
             guard let self = self else { return .commandFailed }
             if self.isPlaying() {
                 self.pause()
-                MPNowPlayingInfoCenter.default().playbackState = .paused
-                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-                info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+                self.nowPlaying.setPlaybackState(.paused)
             } else {
                 self.resume()
-                MPNowPlayingInfoCenter.default().playbackState = .playing
-                var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-                info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
-                MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+                self.nowPlaying.setPlaybackState(.playing)
             }
             return .success
         }
@@ -255,16 +373,14 @@ class RemoteStreamer: NSObject {
         commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self?.seekTo(position: event.positionTime)
-            var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = event.positionTime
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            self?.nowPlaying.updateElapsed(event.positionTime, duration: nil)
             return .success
         }
 
         // Start with all controls disabled until playback actually begins
         disableCommandCenter()
     }
-    
+
     private func setupAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
@@ -282,6 +398,9 @@ class RemoteStreamer: NSObject {
             guard let self = self else { return }
             let hadNetwork = self.lastNetworkPath?.status == .satisfied
             self.lastNetworkPath = path
+            DispatchQueue.main.async {
+                self.networkIsDown = path.status != .satisfied
+            }
 
             // Network just came back — if we're stalled or failed on a live stream, reconnect
             if path.status == .satisfied && hadNetwork == false {
@@ -294,14 +413,14 @@ class RemoteStreamer: NSObject {
     }
 
     private func handleNetworkRestored() {
-        guard let url = currentUrl, wasPlayingBeforeStall else { return }
+        guard currentUrl != nil, wasPlayingBeforeStall else { return }
 
         if isLiveStream {
             print("RemoteStreamer: Network restored, rebuilding live stream player")
             cancelReconnect()
             reconnectAttempts = 0
             isReconnecting = true
-            performReconnect(url: url)
+            performReconnect()
         } else {
             // On-demand: rebuild and seek to saved position
             print("RemoteStreamer: Network restored, resuming on-demand at position \(savedPosition)s")
@@ -312,13 +431,17 @@ class RemoteStreamer: NSObject {
     // MARK: - Reconnection
 
     private func reconnect() {
-        guard let url = currentUrl, isLiveStream else { return }
+        guard currentUrl != nil, isLiveStream else { return }
+        if networkIsDown {
+            waitForNetwork()
+            return
+        }
         guard reconnectAttempts < maxReconnectAttempts else {
             print("RemoteStreamer: Max reconnect attempts (\(maxReconnectAttempts)) reached, giving up")
             isReconnecting = false
             wasPlayingBeforeStall = true  // so handleNetworkRestored will retry when network returns
             cleanupFailedPlayer()
-            NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPause"), object: nil)
+            post(.remoteStreamerPause)
             return
         }
 
@@ -329,30 +452,41 @@ class RemoteStreamer: NSObject {
         let delay = pow(2.0, Double(reconnectAttempts))
         print("RemoteStreamer: Reconnect attempt \(reconnectAttempts)/\(maxReconnectAttempts) in \(delay)s")
 
-        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+        post(.remoteStreamerBuffering, userInfo: ["isBuffering": true])
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self = self, self.isReconnecting else { return }
-            self.performReconnect(url: url)
+            self.performReconnect()
         }
         reconnectTimer = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
-    private func performReconnect(url: String) {
+    /// Offline: keep the player and wait for `handleNetworkRestored` instead of spending reconnect attempts.
+    private func waitForNetwork() {
+        wasPlayingBeforeStall = true
+        // An offline failure says nothing about whether the session still works
+        rejoinedSession = false
+        post(.remoteStreamerBuffering, userInfo: ["isBuffering": true])
+    }
+
+    private func performReconnect() {
         // Tear down the old player completely
         cleanupFailedPlayer()
 
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
-        let osVersion = UIDevice.current.systemVersion
-        let deviceModel = UIDevice.current.model
-        let headers = ["User-Agent": "WNYC-App/iOS \(appVersion); \(deviceModel); iOS \(osVersion)"]
+        // Loading currentUrl again starts a new stream session, often with a pre-roll ad, so rejoin the old one first
+        let url: URL?
+        if !rejoinedSession, let sessionUrl = sessionPlaylistUrl {
+            rejoinedSession = true
+            print("RemoteStreamer: Rejoining the stream session")
+            url = sessionUrl
+        } else {
+            print("RemoteStreamer: Starting a new stream session")
+            url = currentUrl.flatMap { URL(string: $0) }
+        }
+        guard let streamUrl = url else { return }
 
-        guard let streamUrl = URL(string: url) else { return }
-
-        let asset = AVURLAsset(url: streamUrl, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
-        let playerItem = AVPlayerItem(asset: asset)
-
+        let playerItem = makePlayerItem(url: streamUrl)
         player = AVPlayer(playerItem: playerItem)
         setupAudioSession()
         setupObservers(playerItem: playerItem)
@@ -368,16 +502,9 @@ class RemoteStreamer: NSObject {
         // Tear down the old player completely
         cleanupFailedPlayer()
 
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
-        let osVersion = UIDevice.current.systemVersion
-        let deviceModel = UIDevice.current.model
-        let headers = ["User-Agent": "WNYC-App/iOS \(appVersion); \(deviceModel); iOS \(osVersion)"]
-
         guard let streamUrl = URL(string: url) else { return }
 
-        let asset = AVURLAsset(url: streamUrl, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
-        let playerItem = AVPlayerItem(asset: asset)
-
+        let playerItem = makePlayerItem(url: streamUrl)
         player = AVPlayer(playerItem: playerItem)
         setupAudioSession()
         setupObservers(playerItem: playerItem)
@@ -410,7 +537,7 @@ class RemoteStreamer: NSObject {
             if pos > 0 && pos.isFinite { savedPosition = pos }
         }
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self = self, let url = self.currentUrl else { return }
+            guard let self = self, self.currentUrl != nil else { return }
             // If still waiting/stalled after timeout
             if self.player?.timeControlStatus == .waitingToPlayAtSpecifiedRate ||
                self.player?.status == .failed {
@@ -426,7 +553,7 @@ class RemoteStreamer: NSObject {
                 } else {
                     // On-demand: just mark as paused/stalled, wait for network
                     print("RemoteStreamer: Stall watchdog fired for on-demand, pausing at position \(self.savedPosition)s")
-                    NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPause"), object: nil)
+                    self.post(.remoteStreamerPause)
                 }
             }
         }
@@ -447,26 +574,19 @@ class RemoteStreamer: NSObject {
     }
 
     // MARK: - Observers
-    
+
     private func setupObservers(playerItem: AVPlayerItem) {
         NotificationCenter.default.addObserver(self, selector: #selector(playerDidFinishPlaying), name: .AVPlayerItemDidPlayToEndTime, object: playerItem)
         NotificationCenter.default.addObserver(self, selector: #selector(playerFailedToPlayToEnd), name: .AVPlayerItemFailedToPlayToEndTime, object: playerItem)
-        
-        playbackBufferEmptyObserver = playerItem.observe(\.isPlaybackBufferEmpty, options: [.new, .initial]) { item, change in
-            if change.newValue == true {
-                print("Buffer is empty")
-            }
-        }
-        
-        playbackBufferFullObserver = playerItem.observe(\.isPlaybackBufferFull, options: [.new, .initial]) { item, change in
-            if change.newValue == true {
-                print("Buffer is full")
-            }
-        }
-        
-        playbackLikelyToKeepUpObserver = playerItem.observe(\.isPlaybackLikelyToKeepUp, options: [.new, .initial]) { item, change in
-            if item.status == .readyToPlay && change.newValue == true {
-                print("Playback is likely to keep up")
+        NotificationCenter.default.addObserver(self, selector: #selector(playerNewAccessLogEntry), name: .AVPlayerItemNewAccessLogEntry, object: playerItem)
+
+        // Loading failures (a bad URL, a server error, no network) are reported on the item
+        itemStatusObserver = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            DispatchQueue.main.async {
+                // A late report for an item that has since been replaced isn't a failure now
+                guard let self = self, item === self.player?.currentItem else { return }
+                self.itemFailed(item.error)
             }
         }
 
@@ -477,15 +597,11 @@ class RemoteStreamer: NSObject {
                 self.hasFiredReady = true
                 let currentTime = self.player?.currentTime().seconds ?? 0
                 DispatchQueue.main.async {
-                    NotificationCenter.default.post(
-                        name: Notification.Name("RemoteStreamerReady"),
-                        object: nil,
-                        userInfo: [
-                            "duration": duration,
-                            "currentTime": currentTime.isFinite ? currentTime : 0,
-                            "isLiveStream": self.isLiveStream
-                        ]
-                    )
+                    self.post(.remoteStreamerReady, userInfo: [
+                        "duration": duration,
+                        "currentTime": currentTime.isFinite ? currentTime : 0,
+                        "isLiveStream": self.isLiveStream
+                    ])
                 }
             }
         }
@@ -496,9 +612,9 @@ class RemoteStreamer: NSObject {
             case .paused:
                 if self.suppressPauseNotification {
                     self.suppressPauseNotification = false
-                } else if !self.isReconnecting {
+                } else if !self.isReconnecting && !Self.reachedEnd(player.currentItem) {
                     DispatchQueue.main.async {
-                        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPause"), object: nil)
+                        self.post(.remoteStreamerPause)
                     }
                 }
             case .playing:
@@ -508,6 +624,7 @@ class RemoteStreamer: NSObject {
                 self.reconnectAttempts = 0
                 self.isReconnecting = false
                 self.wasPlayingBeforeStall = false
+                self.rejoinedSession = false
 
                 // For live streams, AVPlayerItem.duration is indefinite (NaN) so the
                 // durationObserver will never fire.  Emit the 'ready' event here once
@@ -518,24 +635,21 @@ class RemoteStreamer: NSObject {
                     self.hasFiredReady = true
                     let currentTime = self.player?.currentTime().seconds ?? 0
                     DispatchQueue.main.async {
-                        NotificationCenter.default.post(
-                            name: Notification.Name("RemoteStreamerReady"),
-                            object: nil,
-                            userInfo: [
-                                "duration": 0.0,
-                                "currentTime": currentTime.isFinite ? currentTime : 0,
-                                "isLiveStream": self.isLiveStream
-                            ]
-                        )
+                        self.post(.remoteStreamerReady, userInfo: [
+                            "duration": 0.0,
+                            "currentTime": currentTime.isFinite ? currentTime : 0,
+                            "isLiveStream": self.isLiveStream
+                        ])
                     }
                 }
 
                 DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPlay"), object: nil)
+                    self.post(.remoteStreamerBuffering, userInfo: ["isBuffering": false])
+                    self.post(.remoteStreamerPlay)
                 }
             case .waitingToPlayAtSpecifiedRate:
                 DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: Notification.Name("RemoteStreamerBuffering"), object: nil)
+                    self.post(.remoteStreamerBuffering, userInfo: ["isBuffering": true])
                 }
                 // Save position and start stall watchdog (but not if already reconnecting)
                 self.wasPlayingBeforeStall = true
@@ -568,70 +682,136 @@ class RemoteStreamer: NSObject {
                     self.wasPlayingBeforeStall = true
                     self.isReconnecting = false
                     print("RemoteStreamer: On-demand error: saved position=\(self.savedPosition)s, waiting for network")
-                    NotificationCenter.default.post(name: Notification.Name("RemoteStreamerPause"), object: nil)
+                    self.post(.remoteStreamerPause)
                 } else {
                     self.isReconnecting = false
                     self.cleanupFailedPlayer()
-                    NotificationCenter.default.post(name: Notification.Name("RemoteStreamerStop"), object: nil,
-                        userInfo: ["error": error?.localizedDescription ?? "Playback failed"])
+                    let message = error?.localizedDescription ?? "Playback failed"
+                    self.post(.remoteStreamerStop, userInfo: ["error": message])
+                    self.post(.remoteStreamerError, userInfo: ["message": message])
                 }
             }
         }
-        
+
         setupTimeObserver()
     }
-    
+
+    /// The current item can't be played. Offline, it waits for the network to come back
+    /// (`handleNetworkRestored`); a live stream retries; anything else is an error. Main thread.
+    private func itemFailed(_ error: Error?) {
+        print("RemoteStreamer: Item failed: \(error?.localizedDescription ?? "unknown")")
+        // A live stream that times out while the network is up gets no restore event, so it retries instead
+        if Self.isOffline(error) && (networkIsDown || !isLiveStream) {
+            if !isLiveStream, let currentTime = player?.currentTime() {
+                let pos = currentTime.seconds
+                if pos > 0 && pos.isFinite { savedPosition = pos }
+            }
+            waitForNetwork()
+        } else if isLiveStream && reconnectAttempts < maxReconnectAttempts {
+            reconnect()
+        } else {
+            cancelReconnect()
+            isReconnecting = false
+            post(.remoteStreamerError, userInfo: ["message": error?.localizedDescription ?? "Playback failed"])
+        }
+    }
+
+    /// Whether `error` means there's no network (AVFoundation wraps the URL error).
+    private static func isOffline(_ error: Error?) -> Bool {
+        guard let error = error.map({ $0 as NSError }) else { return false }
+        let offlineCodes = [NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut]
+        if error.domain == NSURLErrorDomain && offlineCodes.contains(error.code) {
+            return true
+        }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return underlying.domain == NSURLErrorDomain && offlineCodes.contains(underlying.code)
+        }
+        return false
+    }
+
     private func removeObservers() {
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: player?.currentItem)
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: player?.currentItem)
-        playbackBufferEmptyObserver?.invalidate()
-        playbackBufferFullObserver?.invalidate()
-        playbackLikelyToKeepUpObserver?.invalidate()
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemNewAccessLogEntry, object: player?.currentItem)
         playerTimeControlStatusObserver?.invalidate()
         playerStatusObserver?.invalidate()
+        itemStatusObserver?.invalidate()
         durationObserver?.invalidate()
         removeTimeObserver()
     }
-    
+
     private func setupTimeObserver() {
         let interval = CMTime(seconds: 1, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             self?.notifyTimeUpdate(time: time.seconds)
         }
     }
-    
+
     private func removeTimeObserver() {
         if let observer = timeObserver {
             player?.removeTimeObserver(observer)
             timeObserver = nil
         }
     }
-    
+
     private func notifyTimeUpdate(time: Double) {
         var userInfo: [String: Any] = ["currentTime": time]
-        // Include duration so Now Playing timeline can be set
-        if let duration = player?.currentItem?.duration, duration.isNumeric {
-            userInfo["duration"] = duration.seconds
+        var duration: Double?
+        // Include duration so the Now Playing timeline can be set
+        if let itemDuration = player?.currentItem?.duration, itemDuration.isNumeric {
+            userInfo["duration"] = itemDuration.seconds
+            duration = itemDuration.seconds
         }
-        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerTimeUpdate"), object: nil, userInfo: userInfo)
+        post(.remoteStreamerTimeUpdate, userInfo: userInfo)
 
-        // Directly update Now Playing elapsed time so the CarPlay timeline works
-        // even when the Capacitor plugin/WebView isn't loaded
-        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = time
-        if let duration = player?.currentItem?.duration, duration.isNumeric, duration.seconds > 0 {
-            info[MPMediaItemPropertyPlaybackDuration] = duration.seconds
-        }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        // Update Now Playing directly so the timeline works even when the
+        // Capacitor plugin/WebView isn't loaded (e.g. CarPlay-only playback)
+        nowPlaying.updateElapsed(time, duration: duration)
     }
-    
+
     func setVolume(volume: Double) {
         player?.volume = Float(volume)
     }
-    
+
     @objc private func playerDidFinishPlaying(note: NSNotification) {
-        NotificationCenter.default.post(name: Notification.Name("RemoteStreamerEnded"), object: nil, userInfo:
-            ["ended": true])
+        // May arrive on any thread
+        DispatchQueue.main.async {
+            // A late notification for an item that has since been replaced isn't an end
+            guard let item = note.object as? AVPlayerItem, item === self.player?.currentItem else { return }
+            // Nothing plays now, so iOS could suspend the app (and its web view) before
+            // JS starts the next item: keep it running until something plays again
+            self.beginEndOfItemTask()
+            self.post(.remoteStreamerEnded, userInfo: ["ended": true])
+        }
+    }
+
+    /// Keeps the app running for a while (iOS allows about 30 s) after an item ends.
+    private func beginEndOfItemTask() {
+        endEndOfItemTask()
+        endOfItemTask = UIApplication.shared.beginBackgroundTask(withName: "RemoteStreamerNextItem") { [weak self] in
+            self?.endEndOfItemTask()
+        }
+    }
+
+    private func endEndOfItemTask() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.endEndOfItemTask() }
+            return
+        }
+        guard endOfItemTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(endOfItemTask)
+        endOfItemTask = .invalid
+    }
+
+    @objc private func playerNewAccessLogEntry(note: NSNotification) {
+        // May arrive on any thread
+        DispatchQueue.main.async {
+            guard self.isLiveStream, let item = note.object as? AVPlayerItem, item === self.player?.currentItem,
+                  let uri = item.accessLog()?.events.last?.uri, let url = URL(string: uri),
+                  url != self.sessionPlaylistUrl else { return }
+            self.sessionPlaylistUrl = url
+            print("RemoteStreamer: Stream session playlist \(url)")
+        }
     }
 
     @objc private func playerFailedToPlayToEnd(note: NSNotification) {
@@ -643,11 +823,15 @@ class RemoteStreamer: NSObject {
         } else {
             isReconnecting = false
             cleanupFailedPlayer()
-            NotificationCenter.default.post(name: Notification.Name("RemoteStreamerStop"), object: nil,
-                userInfo: ["error": error?.localizedDescription ?? "Stream ended unexpectedly"])
+            let message = error?.localizedDescription ?? "Stream ended unexpectedly"
+            post(.remoteStreamerStop, userInfo: ["error": message])
+            // Offline, playback resumes when the network comes back (handleNetworkRestored)
+            if !Self.isOffline(error) {
+                post(.remoteStreamerError, userInfo: ["message": message])
+            }
         }
     }
-    
+
     private func setupInterruptionObserver() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption), name: AVAudioSession.interruptionNotification, object: nil)
     }
@@ -661,19 +845,22 @@ class RemoteStreamer: NSObject {
 
         switch type {
         case .began:
+            wasPlayingBeforeInterruption = isPlaying()
             player?.pause()
         case .ended:
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                if options.contains(.shouldResume) {
+                // Only what the interruption paused: not audio the user had paused
+                if options.contains(.shouldResume) && wasPlayingBeforeInterruption {
                     player?.play()
                 }
             }
+            wasPlayingBeforeInterruption = false
         @unknown default:
             break
         }
     }
-    
+
     deinit {
         cancelReconnect()
         pathMonitor?.cancel()
