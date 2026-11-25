@@ -32,6 +32,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
@@ -150,6 +151,12 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
         /** Supplies browsable content to Android Auto etc.; null when the app has none. */
         private MediaLibraryProvider libraryProvider;
 
+        /** The media id of what is playing, null when nothing plays. Main thread. */
+        private String playingMediaId;
+
+        /** Lists media browsers have loaded, to reload when what plays changes. Main thread. */
+        private final Set<String> loadedParentIds = new HashSet<>();
+
         /** Background work: browse requests, item resolution, artwork downloads. */
         private ExecutorService executor;
 
@@ -198,6 +205,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 result.sendResult(new ArrayList<>());
                 return;
             }
+            loadedParentIds.add(parentMediaId);
             // Detach so we can load asynchronously
             result.detach();
             executor().execute(() -> {
@@ -296,7 +304,14 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     return;
                 }
                 final PlayableItem resolved = item;
-                handler.post(() -> playItem(resolved));
+                handler.post(() -> {
+                    // Asked again for what is playing (a second tap, "play WNYC"): don't start it over.
+                    // The audio must match too: an id can stay the same for new audio (an hourly newscast)
+                    PlayableItem current = currentItem;
+                    boolean alreadyPlaying = resolved.mediaId != null && resolved.mediaId.equals(playingMediaId)
+                            && current != null && Objects.equals(resolved.canonicalUrl, current.canonicalUrl);
+                    if (!alreadyPlaying) playItem(resolved);
+                });
             });
         }
 
@@ -966,6 +981,23 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 player.release();
                 player = null;
             }
+            syncPlayingMediaId();
+        }
+
+        /** Tells the library provider what plays now and has media browsers reload their lists. Main thread. */
+        private void syncPlayingMediaId() {
+            PlayableItem item = currentItem;
+            String mediaId = player != null && player.isPlaying() && item != null ? item.mediaId : null;
+            if (Objects.equals(mediaId, playingMediaId)) return;
+            playingMediaId = mediaId;
+            MediaLibraryProvider provider = libraryProvider;
+            if (provider == null) return;
+            try {
+                provider.onPlayingChanged(mediaId);
+            } catch (Exception e) {
+                Log.w(TAG, "Media library provider failed in onPlayingChanged", e);
+            }
+            for (String parentId : loadedParentIds) notifyChildrenChanged(parentId);
         }
 
         public void pause() {
@@ -1128,6 +1160,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
 
                 @Override
                 public void onIsPlayingChanged(boolean isPlaying) {
+                    syncPlayingMediaId();
                     if (isPlaying) {
                         if (!isLiveStream) startUpdatingTime();
                         if (plugin != null) plugin.onPlayerEvent("play", new JSObject());

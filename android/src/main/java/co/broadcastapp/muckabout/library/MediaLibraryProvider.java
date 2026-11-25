@@ -72,6 +72,12 @@ public interface MediaLibraryProvider {
         return null;
     }
 
+    /**
+     * The media id now playing, or null when nothing plays (main thread). Media browsers
+     * reload the lists they show right after, so {@link #getChildren} can mark that item.
+     */
+    default void onPlayingChanged(@Nullable String mediaId) {}
+
     /** Called when the player service is destroyed. */
     default void onDestroy() {}
 }
