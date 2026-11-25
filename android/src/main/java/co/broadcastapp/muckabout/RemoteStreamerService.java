@@ -940,6 +940,8 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     .setAudioAttributes(playerAudioAttributes, true)
                     .setHandleAudioBecomingNoisy(true)
                     .setWakeMode(C.WAKE_MODE_NETWORK)
+                    // Buffering through an outage isn't stuck: ConnectionRetryPolicy resumes loading once the network is back
+                    .setStuckBufferingDetectionTimeoutMs(Integer.MAX_VALUE)
                     .build();
             sessionPlaylist = null;
             liveRecoveries = 0;
@@ -1144,13 +1146,10 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                     if (player.getCurrentManifest() instanceof HlsManifest manifest) {
                         onSessionPlaylist(manifest.mediaPlaylist);
                     }
-                    Object m = player.getCurrentManifest(); // DBGSESSION
-                    if (m instanceof androidx.media3.exoplayer.hls.HlsManifest) { androidx.media3.exoplayer.hls.playlist.HlsMediaPlaylist p = ((androidx.media3.exoplayer.hls.HlsManifest) m).mediaPlaylist; Log.d(TAG, "DBGSESSION seq=" + p.mediaSequence + " n=" + p.segments.size() + " last=" + (p.segments.isEmpty() ? "" : p.segments.get(p.segments.size() - 1).url) + " uri=" + p.baseUri); } // DBGSESSION
                 }
 
                 @Override
                 public void onPlayerError(@NonNull PlaybackException error) {
-                    Log.d(TAG, "DBGSESSION onPlayerError " + error.getErrorCodeName() + " cause=" + error.getCause()); // DBGSESSION
                     if (recoverLiveSession(error)) return;
                     setPlaybackState(PlaybackStateCompat.STATE_ERROR);
                     update();
