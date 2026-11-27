@@ -63,10 +63,10 @@ public final class PlayableItem {
         this.durationSeconds = durationSeconds;
     }
 
-    /** An item known only by URL (playback requested from JS). */
+    /** An item known by URL and the media id JS gave, if any (playback requested from JS). */
     @NonNull
-    public static PlayableItem fromUrl(@NonNull String url, boolean isLive) {
-        return new PlayableItem(null, url, null, "", "", "", null, isLive, 0);
+    public static PlayableItem fromUrl(@Nullable String mediaId, @NonNull String url, boolean isLive) {
+        return new PlayableItem(mediaId, url, null, "", "", "", null, isLive, 0);
     }
 
     /** The URL reported to JS ({@code streamUrl}). */

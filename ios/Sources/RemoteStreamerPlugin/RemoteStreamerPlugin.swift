@@ -102,7 +102,7 @@ public class RemoteStreamerPlugin: CAPPlugin, CAPBridgedPlugin {
             implementation.disableCommandCenter()
         }
 
-        implementation.play(url: url) { result in
+        implementation.play(url: url, mediaId: call.getString("mediaId")) { result in
             switch result {
             case .success:
                 call.resolve()

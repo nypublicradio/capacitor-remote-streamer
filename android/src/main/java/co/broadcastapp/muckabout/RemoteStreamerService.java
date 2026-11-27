@@ -306,10 +306,12 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 final PlayableItem resolved = item;
                 handler.post(() -> {
                     // Asked again for what is playing (a second tap, "play WNYC"): don't start it over.
-                    // The audio must match too: an id can stay the same for new audio (an hourly newscast)
+                    // The audio must match too when known: an id can stay the same for new audio (an
+                    // hourly newscast). Items JS started have no canonical URL; their id is enough.
                     PlayableItem current = currentItem;
                     boolean alreadyPlaying = resolved.mediaId != null && resolved.mediaId.equals(playingMediaId)
-                            && current != null && Objects.equals(resolved.canonicalUrl, current.canonicalUrl);
+                            && current != null
+                            && (current.canonicalUrl == null || current.canonicalUrl.equals(resolved.canonicalUrl));
                     if (!alreadyPlaying) playItem(resolved);
                 });
             });
@@ -386,7 +388,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
             handler.post(() -> {
                 PlayableItem base = currentItem != null
                         ? currentItem
-                        : PlayableItem.fromUrl(currentUrl != null ? currentUrl : "", isLiveStream);
+                        : PlayableItem.fromUrl(null, currentUrl != null ? currentUrl : "", isLiveStream);
                 boolean artworkChanged = !Objects.equals(base.artworkUrl, artworkUrl);
                 setTitle(title);
                 setArtist(artist);
@@ -898,7 +900,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
          *
          * @return false when the URL names a bundled file that doesn't exist
          */
-        public boolean play(String url) {
+        public boolean play(String url, @Nullable String mediaId) {
             if (url == null) return false;
             String playableUrl = playableUrl(url);
             if (playableUrl == null) {
@@ -906,7 +908,7 @@ import co.broadcastapp.muckabout.library.ProviderLoader;
                 return false;
             }
             boolean isLive = playableUrl.contains(".m3u8");
-            currentItem = PlayableItem.fromUrl(playableUrl, isLive);
+            currentItem = PlayableItem.fromUrl(mediaId, playableUrl, isLive);
             // Every item, not just the first: the app may be in the background between items
             handler.post(this::ensureForeground);
             playUrl(playableUrl, isLive);

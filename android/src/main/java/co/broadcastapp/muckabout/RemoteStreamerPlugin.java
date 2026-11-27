@@ -93,7 +93,7 @@ public class RemoteStreamerPlugin extends Plugin {
         }
 
         if (service != null) {
-            if (service.play(url)) {
+            if (service.play(url, call.getString("mediaId"))) {
                 call.resolve();
             } else {
                 call.reject("Nothing to play at " + url);

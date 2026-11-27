@@ -78,8 +78,10 @@ export interface RemoteStreamerPlugin {
    * while after it, so it can start the next item.
    *
    * `enableCommandCenter` and `enableCommandCenterSeek` set up the iOS lock screen controls.
+   * `mediaId` is the item's id in the native media library (CarPlay, Android Auto), so a car
+   * list can show that it is playing and a tap on it there doesn't start it over.
    */
-  play (options: { url: string, enableCommandCenter?: boolean, enableCommandCenterSeek?: boolean }): Promise<void>
+  play (options: { url: string, enableCommandCenter?: boolean, enableCommandCenterSeek?: boolean, mediaId?: string }): Promise<void>
   pause (): Promise<void>
   /** Resumes. When nothing is loaded (after `stop`, `releasePlayer` or the end), plays the last item again. */
   resume (): Promise<void>

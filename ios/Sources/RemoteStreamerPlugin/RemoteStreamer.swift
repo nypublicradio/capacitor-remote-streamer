@@ -95,14 +95,15 @@ public final class RemoteStreamer: NSObject {
     }
 
     /// Plays a URL requested by JS. JS sends display metadata separately via `setNowPlayingInfo`.
-    /// A `bundle:<path>` URL plays a file the host app bundles with its web code.
-    func play(url: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    /// A `bundle:<path>` URL plays a file the host app bundles with its web code. `mediaId`
+    /// names the item for a native integration such as CarPlay.
+    func play(url: String, mediaId: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         guard let playableUrl = Self.playableUrl(url) else {
             completion(.failure(NSError(domain: "RemoteStreamer", code: 0, userInfo: [NSLocalizedDescriptionKey: "Nothing to play at \(url)"])))
             return
         }
         let isLive = playableUrl.contains(".m3u8")
-        currentItem = PlayableItem(url: playableUrl, isLive: isLive)
+        currentItem = PlayableItem(mediaId: mediaId, url: playableUrl, isLive: isLive)
         startPlayback(url: playableUrl, isLive: isLive, completion: completion)
     }
 
